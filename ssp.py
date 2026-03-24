@@ -16,8 +16,8 @@ class ThreeAxisSSPConfig:
     Configuration for a bounded 3-axis SSP.
 
     Coordinate ranges:
-        x in [1, 9]
-        y in [1, 9]
+        x in [0, 9] (0 skips x)
+        y in [0, 9] (0 skips y)
         z in [0, 9]
 
     dim:
@@ -101,7 +101,7 @@ class ThreeAxisSSP(nn.Module):
         a codebook for every valid coordinate and decode by max cosine similarity.
 
     Notes:
-        - x, y are in [1, 9]
+        - x, y are in [0, 9], where 0 skips that axis
         - z in [0, 9]
         - Supports batch encoding and decoding
     """
@@ -276,13 +276,20 @@ class ThreeAxisSSP(nn.Module):
         y = coords[..., 1]
         z = coords[..., 2]
 
-        valid = (x >= 1) & (x <= 9) & (y >= 1) & (y <= 9) & (z >= 0) & (z <= 9)
+        valid = (
+            (x >= 0)
+            & (x <= 9)
+            & (y >= 0)
+            & (y <= 9)
+            & (z >= 0)
+            & (z <= 9)
+        )
 
         if not torch.all(valid).item():
             bad = coords[~valid]
             raise ValueError(
                 "Found out-of-range coordinates. "
-                "Expected x,y in [1,9] and z in [0,9]. "
+                "Expected x,y in [0,9] where 0 means skip, and z in [0,9]. "
                 f"Examples of invalid rows: {bad[:5]}"
             )
 

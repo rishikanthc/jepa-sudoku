@@ -20,6 +20,11 @@ class TrainConfig:
     learning_rate: float = 1e-3
     min_delta: float = 1e-6
     device: str = "cpu"
+    curriculum_enabled: bool = False
+    curriculum_step: int = 1
+    curriculum_patience: int = 10
+    curriculum_min_delta: float = 1e-6
+    curriculum_max_mask: int = 64
 
 
 class SudokuTrainer:
@@ -56,6 +61,7 @@ class SudokuTrainer:
             chain(self.encoder.parameters(), self.predictor.parameters()),
             lr=config.learning_rate,
         )
+        self._plateau_counter = 0
 
     @staticmethod
     def _build_value_only_coords(solution: Tensor) -> Tensor:
@@ -66,6 +72,35 @@ class SudokuTrainer:
         coords = torch.zeros_like(solution)
         coords[:, :, 2] = solution[:, :, 2]
         return coords
+
+    def _maybe_increase_difficulty(self, monitor_loss: float, best_loss: float) -> bool:
+        if (
+            not self.config.curriculum_enabled
+            or self.data_module.current_num_cells_to_mask >= self.config.curriculum_max_mask
+        ):
+            return False
+
+        improved = monitor_loss + self.config.curriculum_min_delta < best_loss
+        if improved:
+            self._plateau_counter = 0
+            return False
+
+        self._plateau_counter += 1
+        if self._plateau_counter < self.config.curriculum_patience:
+            return False
+
+        new_num_cells = min(
+            self.config.curriculum_max_mask,
+            self.data_module.current_num_cells_to_mask + self.config.curriculum_step,
+        )
+        if new_num_cells == self.data_module.current_num_cells_to_mask:
+            return False
+
+        self.data_module.set_num_cells_to_mask(new_num_cells)
+        if self.val_data_module is not None:
+            self.val_data_module.set_num_cells_to_mask(new_num_cells)
+        self._plateau_counter = 0
+        return True
 
     def _run_epoch(self, *, train: bool) -> float:
         if train:
@@ -151,6 +186,12 @@ class SudokuTrainer:
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
+
+            if self._maybe_increase_difficulty(monitor_loss, best_loss):
+                print(
+                    f"Curriculum update -> empty_cells={self.data_module.current_num_cells_to_mask}"
+                )
+                epochs_without_improvement = 0
 
             if epochs_without_improvement >= self.config.patience:
                 break

@@ -145,3 +145,25 @@ def test_randomized_masking_changes_per_access_for_same_sample() -> None:
     assert first_query.shape[0] == 10
     assert second_query.shape[0] == 10
     assert not torch.equal(first, second)
+
+
+def test_set_num_cells_to_mask_updates_output_shapes() -> None:
+    module = SudokuDataModule(
+        SudokuDataConfig(
+            num_samples=4,
+            num_cells_to_mask=2,
+            seed=555,
+            batch_size=2,
+            shuffle=False,
+        )
+    )
+
+    puzzle_a, solution_a, query_a, _ = module.get_single(0)
+    module.set_num_cells_to_mask(5)
+    puzzle_b, solution_b, query_b, _ = module.get_single(0)
+
+    assert puzzle_a.shape == (81, 3)
+    assert puzzle_b.shape == (81, 3)
+    assert query_b.shape[0] == 5
+    assert solution_b.shape[0] == 5
+    assert query_a.shape[0] != query_b.shape[0]

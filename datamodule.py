@@ -95,6 +95,7 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
         self.unique_solution = unique_solution
         self.mask_cells_curriculum = mask_cells_curriculum
         self.current_epoch = 0
+        self._manual_num_cells_to_mask: int | None = None
 
         # Optional cache keyed by index for efficient solution reuse.
         self._solution_cache: dict[int, torch.Tensor] = {}
@@ -112,7 +113,16 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
 
+    def set_num_cells_to_mask(self, num_cells_to_mask: int) -> None:
+        num_cells = int(num_cells_to_mask)
+        if not 0 <= num_cells <= 64:
+            raise ValueError("num_cells_to_mask must be between 0 and 64 inclusive")
+        self._manual_num_cells_to_mask = num_cells
+
     def _num_cells_for_epoch(self) -> int:
+        if self._manual_num_cells_to_mask is not None:
+            return self._manual_num_cells_to_mask
+
         if self.mask_cells_curriculum is None:
             num_cells = self.num_cells_to_mask
         else:
@@ -221,6 +231,9 @@ class SudokuDataModule:
 
     def set_epoch(self, epoch: int) -> None:
         self.dataset.set_epoch(epoch)
+
+    def set_num_cells_to_mask(self, num_cells_to_mask: int) -> None:
+        self.dataset.set_num_cells_to_mask(num_cells_to_mask)
 
     @property
     def current_num_cells_to_mask(self) -> int:

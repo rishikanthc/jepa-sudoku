@@ -4,29 +4,29 @@ defaults:
 seed: 123
 
 ssp:
-  dim: 256
+  dim: 512
   seed: 42
 
 model:
   context_size: 81
   n_heads: 4
-  head_dim: 64
+  head_dim: 128
   n_layers: 2
   d_ff: 256
   dropout: 0.0
 
 data:
   num_samples: 8
-  num_cells_to_mask: 18
+  num_cells_to_mask: 1
   seed: 123
-  unique_solution: false
+  unique_solution: true
   batch_size: 8
   num_workers: 0
   shuffle: false
   pin_memory: false
   drop_last: false
   curriculum:
-    enabled: true
+    enabled: false
     start: 1
     max_mask: 18
     num_epochs: 20
@@ -54,3 +54,8 @@ training:
   learning_rate: 0.003
   min_delta: 1.0e-6
   device: "cpu"
+  curriculum_enabled: true
+  curriculum_step: 1
+  curriculum_patience: 16
+  curriculum_min_delta: 1.0e-6
+  curriculum_max_mask: 18

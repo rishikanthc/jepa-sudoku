@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import torch
 
-from datamodule import SudokuDataConfig, SudokuDataModule, SudokuPuzzleDataset
+from datamodule import (
+    LinearMaskCurriculum,
+    SudokuDataConfig,
+    SudokuDataModule,
+    SudokuPuzzleDataset,
+)
 
 
 def test_dataset_shapes_and_mask() -> None:
@@ -49,3 +54,49 @@ def test_reproducibility_across_dataset_instances() -> None:
 
     assert torch.allclose(dataset_a[2][0], dataset_b[2][0])
     assert torch.equal(dataset_a[2][2], dataset_b[2][2])
+
+
+def test_curriculum_masking_is_epoch_driven_and_increasing() -> None:
+    curriculum = LinearMaskCurriculum(start=1, max_mask=5, num_epochs=4)
+    config = SudokuDataConfig(
+        num_samples=2,
+        num_cells_to_mask=5,
+        seed=99,
+        mask_cells_curriculum=curriculum,
+        batch_size=1,
+        shuffle=False,
+    )
+    module = SudokuDataModule(config)
+
+    module.set_epoch(0)
+    puzzle_easy, _, mask_easy = module.get_single(0)
+    module.set_epoch(4)
+    puzzle_hard, _, mask_hard = module.get_single(0)
+
+    assert (mask_easy.sum() == 80)  # one cell masked
+    assert (mask_hard.sum() == 76)  # five cells masked
+    assert not torch.equal(puzzle_easy, puzzle_hard)
+
+
+def test_curriculum_reproducibility_across_instances() -> None:
+    curriculum = LinearMaskCurriculum(start=2, max_mask=6, num_epochs=3)
+    config = SudokuDataConfig(
+        num_samples=3,
+        num_cells_to_mask=6,
+        seed=17,
+        mask_cells_curriculum=curriculum,
+        batch_size=1,
+        shuffle=False,
+    )
+
+    module_a = SudokuDataModule(config)
+    module_b = SudokuDataModule(config)
+    module_a.set_epoch(2)
+    module_b.set_epoch(2)
+
+    puzzle_a, solution_a, mask_a = module_a.get_single(1)
+    puzzle_b, solution_b, mask_b = module_b.get_single(1)
+
+    assert torch.equal(puzzle_a, puzzle_b)
+    assert torch.equal(solution_a, solution_b)
+    assert torch.equal(mask_a, mask_b)

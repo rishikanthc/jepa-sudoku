@@ -12,21 +12,28 @@ from datamodule import (
 
 def test_dataset_shapes_and_mask() -> None:
     dataset = SudokuPuzzleDataset(num_samples=5, num_cells_to_mask=24, seed=123)
-    puzzle, solution, mask = dataset[0]
+    puzzle, solution, query, mask = dataset[0]
+    empty_count = int((puzzle[:, 2] == 0).sum().item())
 
     assert puzzle.shape == (81, 3)
-    assert solution.shape == (81, 3)
+    assert solution.shape == (empty_count, 3)
     assert mask.shape == (81,)
+    assert query.shape == (empty_count, 3)
 
     # x and y are 1..9, z is 0..9
     assert torch.all((puzzle[:, 0] >= 1) & (puzzle[:, 0] <= 9))
     assert torch.all((puzzle[:, 1] >= 1) & (puzzle[:, 1] <= 9))
     assert torch.all((puzzle[:, 2] >= 0) & (puzzle[:, 2] <= 9))
     assert torch.all((solution[:, 2] >= 1) & (solution[:, 2] <= 9))
+    assert torch.all(query[:, 2] == 0)
 
     # mask tracks puzzle clues
     assert mask.dtype == torch.bool
     assert torch.equal(mask, puzzle[:, 2] != 0)
+
+    # query should contain exactly the empty cell coordinates
+    empty_coords = puzzle[~mask][:, :2]
+    assert torch.equal(query[:, :2], empty_coords)
 
 
 def test_dataloader_shapes_match_batching() -> None:
@@ -41,9 +48,12 @@ def test_dataloader_shapes_match_batching() -> None:
     module = SudokuDataModule(config)
     loader = module.train_dataloader()
 
-    batch_puzzle, batch_solution, batch_mask = next(iter(loader))
+    batch_puzzle, batch_solution, batch_query, batch_mask = next(iter(loader))
+    n = module.current_num_cells_to_mask
+
     assert batch_puzzle.shape == (config.batch_size, 81, 3)
-    assert batch_solution.shape == (config.batch_size, 81, 3)
+    assert batch_solution.shape == (config.batch_size, n, 3)
+    assert batch_query.shape == (config.batch_size, n, 3)
     assert batch_mask.shape == (config.batch_size, 81)
     assert batch_mask.dtype == torch.bool
 
@@ -69,13 +79,15 @@ def test_curriculum_masking_is_epoch_driven_and_increasing() -> None:
     module = SudokuDataModule(config)
 
     module.set_epoch(0)
-    puzzle_easy, _, mask_easy = module.get_single(0)
+    puzzle_easy, _, query_easy, mask_easy = module.get_single(0)
     module.set_epoch(4)
-    puzzle_hard, _, mask_hard = module.get_single(0)
+    puzzle_hard, _, query_hard, mask_hard = module.get_single(0)
 
     assert (mask_easy.sum() == 80)  # one cell masked
     assert (mask_hard.sum() == 76)  # five cells masked
     assert not torch.equal(puzzle_easy, puzzle_hard)
+    assert query_easy.shape[0] == 1
+    assert query_hard.shape[0] == 5
 
 
 def test_curriculum_reproducibility_across_instances() -> None:
@@ -94,9 +106,10 @@ def test_curriculum_reproducibility_across_instances() -> None:
     module_a.set_epoch(2)
     module_b.set_epoch(2)
 
-    puzzle_a, solution_a, mask_a = module_a.get_single(1)
-    puzzle_b, solution_b, mask_b = module_b.get_single(1)
+    puzzle_a, solution_a, query_a, mask_a = module_a.get_single(1)
+    puzzle_b, solution_b, query_b, mask_b = module_b.get_single(1)
 
     assert torch.equal(puzzle_a, puzzle_b)
     assert torch.equal(solution_a, solution_b)
+    assert torch.equal(query_a, query_b)
     assert torch.equal(mask_a, mask_b)

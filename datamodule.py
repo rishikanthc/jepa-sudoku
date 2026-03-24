@@ -31,9 +31,9 @@ class LinearMaskCurriculum:
     def __post_init__(self) -> None:
         if self.num_epochs < 0:
             raise ValueError("num_epochs must be >= 0")
-        if not 0 <= self.start <= 64:
+        if not 0 <= self.start <= 80:
             raise ValueError("start must be between 0 and 80")
-        if not 0 <= self.max_mask <= 64:
+        if not 0 <= self.max_mask <= 80:
             raise ValueError("max_mask must be between 0 and 80")
         if self.max_mask < self.start:
             raise ValueError("max_mask must be >= start")
@@ -69,11 +69,12 @@ def _board_to_value_tensor(board: list[list[int]]) -> torch.Tensor:
     return torch.tensor(values, dtype=torch.float32)
 
 
-class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
+class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
     """
     Dataset yielding:
       - puzzle:  (81, 3) coordinates with zeros for empty cells in z
-      - solution: (81, 3) full solved coordinates
+      - solution: (N, 3) solved coordinates at empty cell positions
+      - query:    (N, 3) query coordinates for each empty cell (z=0)
       - mask:     (81,) boolean mask, True where puzzle has a clue
     """
 
@@ -140,7 +141,7 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         self._removal_cache[index] = removal_order_tensor
         return solution_values, removal_order_tensor
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         if not 0 <= index < self.num_samples:
             raise IndexError(
                 f"Index {index} out of range for dataset of size {self.num_samples}"
@@ -165,6 +166,12 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
                 )
                 solution_values = _board_to_value_tensor(puzzle_data.solution)
                 puzzle_values = _board_to_value_tensor(puzzle_data.puzzle)
+            if int((puzzle_values == 0).sum()) != num_cells_to_mask:
+                solution_values, removal_order = self._get_or_build_template(index)
+                puzzle_values = solution_values.clone()
+                n = min(num_cells_to_mask, 80)
+                if n > 0:
+                    puzzle_values[removal_order[:n]] = 0.0
         else:
             solution_values, removal_order = self._get_or_build_template(index)
             puzzle_values = solution_values.clone()
@@ -181,7 +188,12 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         puzzle[:, 2] = puzzle_values
 
         mask = puzzle_values.ne(0.0)
-        return puzzle, solution, mask
+        empty_indices = torch.nonzero(~mask, as_tuple=False).reshape(-1)
+        solution_cells = solution[empty_indices]
+        query = torch.empty((empty_indices.numel(), 3), dtype=torch.float32)
+        query[:, :2] = self._xy[empty_indices]
+        query[:, 2] = 0.0
+        return puzzle, solution_cells, query, mask
 
 
 class SudokuDataModule:
@@ -207,7 +219,7 @@ class SudokuDataModule:
     def current_num_cells_to_mask(self) -> int:
         return self.dataset._num_cells_for_epoch()
 
-    def train_dataloader(self) -> DataLoader[tuple[Tensor, Tensor, Tensor]]:
+    def train_dataloader(self) -> DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]]:
         return DataLoader(
             self.dataset,
             batch_size=self.config.batch_size,
@@ -218,7 +230,7 @@ class SudokuDataModule:
             generator=self._dataloader_generator,
         )
 
-    def get_single(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
+    def get_single(self, idx: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         return self.dataset[idx]
 
     def __len__(self) -> int:

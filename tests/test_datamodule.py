@@ -134,3 +134,14 @@ def test_non_unique_masking_position_changes_with_epoch() -> None:
     assert query_epoch0.shape[0] == 18
     assert query_epoch3.shape[0] == 18
     assert not torch.equal(puzzle_epoch0, puzzle_epoch3)
+
+
+def test_randomized_masking_changes_per_access_for_same_sample() -> None:
+    dataset = SudokuPuzzleDataset(num_samples=3, num_cells_to_mask=10, seed=7)
+
+    first, _, first_query, _ = dataset[0]
+    second, _, second_query, _ = dataset[0]
+
+    assert first_query.shape[0] == 10
+    assert second_query.shape[0] == 10
+    assert not torch.equal(first, second)

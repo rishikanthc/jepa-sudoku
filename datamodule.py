@@ -98,6 +98,7 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
 
         # Optional cache keyed by index for efficient solution reuse.
         self._solution_cache: dict[int, torch.Tensor] = {}
+        self._sample_access_counts: dict[int, int] = {}
 
         # Base x,y coordinates are fixed, 1..9 in row-major order.
         xs = torch.arange(1, 10)
@@ -131,22 +132,25 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
         self._solution_cache[index] = solution_values
         return solution_values
 
-    def _mask_seed(self, index: int) -> int:
-        # Combine factors that are stable for a given index/epoch but vary
-        # when either epoch or the requested number of masked cells changes.
+    def _mask_seed(self, index: int, access_count: int) -> int:
+        # Combine factors that are stable for a given access pattern while
+        # remaining reproducible for a fixed seed.
         return (
             self.seed
             + (index * 100_0003)
             + (self.current_epoch * 10_007)
             + self._num_cells_for_epoch()
+            + (access_count * 1_000_003)
         )
 
-    def _masked_indices(self, index: int, num_cells_to_mask: int) -> Tensor:
+    def _masked_indices(
+        self, index: int, num_cells_to_mask: int, access_count: int
+    ) -> Tensor:
         if num_cells_to_mask <= 0:
             return torch.empty((0,), dtype=torch.long)
 
         generator = torch.Generator()
-        generator.manual_seed(self._mask_seed(index))
+        generator.manual_seed(self._mask_seed(index, access_count))
         return torch.randperm(81, generator=generator)[:num_cells_to_mask]
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -156,6 +160,8 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
             )
 
         num_cells_to_mask = self._num_cells_for_epoch()
+        access_count = self._sample_access_counts.get(index, 0)
+        self._sample_access_counts[index] = access_count + 1
 
         if self.unique_solution:
             sample_seed = self.seed + index + self.current_epoch * 10_009
@@ -170,14 +176,14 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
                 puzzle_values = solution_values.clone()
                 n = min(num_cells_to_mask, 64)
                 if n > 0:
-                    masked_indices = self._masked_indices(index, n)
+                    masked_indices = self._masked_indices(index, n, access_count)
                     puzzle_values[masked_indices] = 0.0
         else:
             solution_values = self._get_or_build_template(index)
             puzzle_values = solution_values.clone()
             n = min(num_cells_to_mask, 64)
             if n > 0:
-                masked_indices = self._masked_indices(index, n)
+                masked_indices = self._masked_indices(index, n, access_count)
                 puzzle_values[masked_indices] = 0.0
 
         solution = torch.empty((81, 3), dtype=torch.float32)

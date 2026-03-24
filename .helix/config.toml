@@ -1,0 +1,3 @@
+theme = "zed_onelight"
+[editor.lsp]
+display-inlay-hints = true

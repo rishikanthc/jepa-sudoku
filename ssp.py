@@ -16,8 +16,8 @@ class ThreeAxisSSPConfig:
     Configuration for a bounded 3-axis SSP.
 
     Coordinate ranges:
-        x in [0, 9]
-        y in [0, 9]
+        x in [1, 9]
+        y in [1, 9]
         z in [0, 9]
 
     dim:
@@ -97,11 +97,12 @@ class ThreeAxisSSP(nn.Module):
                   sin(phase_1), ..., sin(phase_m)]
 
     Decoding:
-        Since the domain is small (10 * 10 * 10 = 1000 states), we precompute
+        Since the domain is small (9 * 9 * 10 = 810 states), we precompute
         a codebook for every valid coordinate and decode by max cosine similarity.
 
     Notes:
-        - x, y, z are in [0, 9]
+        - x, y are in [1, 9]
+        - z in [0, 9]
         - Supports batch encoding and decoding
     """
 
@@ -127,8 +128,8 @@ class ThreeAxisSSP(nn.Module):
             )  # (m, 3)
 
             # Build the bounded coordinate codebook
-            coords = self._make_all_valid_coords()  # (1000, 3)
-            codebook = self._encode_with_k(coords=coords, K=K, dim=config.dim)  # (1000, dim)
+            coords = self._make_all_valid_coords()  # (810, 3)
+            codebook = self._encode_with_k(coords=coords, K=K, dim=config.dim)  # (810, dim)
         else:
             if store.config != config:
                 raise ValueError(
@@ -249,14 +250,14 @@ class ThreeAxisSSP(nn.Module):
         Enumerate all valid coordinates.
 
         Returns:
-            coords: (1000, 3) tensor where each row is [x, y, z]
+            coords: (810, 3) tensor where each row is [x, y, z]
         """
-        xs = torch.arange(0, 10)
-        ys = torch.arange(0, 10)
+        xs = torch.arange(1, 10)
+        ys = torch.arange(1, 10)
         zs = torch.arange(0, 10)
 
         grid_x, grid_y, grid_z = torch.meshgrid(xs, ys, zs, indexing="ij")
-        coords = torch.stack([grid_x, grid_y, grid_z], dim=-1)  # (10, 10, 10, 3)
+        coords = torch.stack([grid_x, grid_y, grid_z], dim=-1)  # (9, 9, 10, 3)
         coords = rearrange(coords, "x y z c -> (x y z) c").float()
         return coords
 
@@ -275,13 +276,13 @@ class ThreeAxisSSP(nn.Module):
         y = coords[..., 1]
         z = coords[..., 2]
 
-        valid = (x >= 0) & (x <= 9) & (y >= 0) & (y <= 9) & (z >= 0) & (z <= 9)
+        valid = (x >= 1) & (x <= 9) & (y >= 1) & (y <= 9) & (z >= 0) & (z <= 9)
 
         if not torch.all(valid).item():
             bad = coords[~valid]
             raise ValueError(
                 "Found out-of-range coordinates. "
-                "Expected x,y in [0,9] and z in [0,9]. "
+                "Expected x,y in [1,9] and z in [0,9]. "
                 f"Examples of invalid rows: {bad[:5]}"
             )
 
@@ -338,7 +339,7 @@ class ThreeAxisSSP(nn.Module):
             ssp: (..., dim)
 
         Returns:
-            sims: (..., 1000)
+            sims: (..., 810)
         """
         ssp = ssp.to(dtype=self.K.dtype, device=self.device)
         batch_shape = ssp.shape[:-1]
@@ -347,7 +348,7 @@ class ThreeAxisSSP(nn.Module):
         flat_ssp = F.normalize(flat_ssp, dim=-1)
 
         # codebook is already normalized
-        sims = flat_ssp @ self.codebook.T  # (B, 1000)
+        sims = flat_ssp @ self.codebook.T  # (B, 810)
         sims = sims.reshape(batch_shape + (self.codebook.shape[0],))
         return sims
 
@@ -363,7 +364,7 @@ class ThreeAxisSSP(nn.Module):
             decoded_coords: (..., 3)
             best_similarity: (...)
         """
-        sims = self.similarity_to_codebook(ssp)  # (..., 1000)
+        sims = self.similarity_to_codebook(ssp)  # (..., 810)
 
         flat_sims = sims.reshape(-1, sims.shape[-1])
         best_idx = flat_sims.argmax(dim=-1)  # (B,)
@@ -386,7 +387,7 @@ class ThreeAxisSSP(nn.Module):
 
         Args:
             ssp: (..., dim)
-            xy:  (..., 2), with x,y in [0,9]
+            xy:  (..., 2), with x,y in [1,9]
 
         Returns:
             z_hat: (...,) tensor of decoded z values in [0,9]
@@ -400,11 +401,11 @@ class ThreeAxisSSP(nn.Module):
 
         x = xy[..., 0]
         y = xy[..., 1]
-        valid = (x >= 0) & (x <= 9) & (y >= 0) & (y <= 9)
+        valid = (x >= 1) & (x <= 9) & (y >= 1) & (y <= 9)
         if not torch.all(valid).item():
             bad = xy[~valid]
             raise ValueError(
-                f"Found out-of-range x/y. Expected x,y in [0,9]. Examples: {bad[:5]}"
+                f"Found out-of-range x/y. Expected x,y in [1,9]. Examples: {bad[:5]}"
             )
 
         batch_shape = xy.shape[:-1]

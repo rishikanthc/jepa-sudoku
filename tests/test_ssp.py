@@ -24,13 +24,9 @@ def test_encode_decode_roundtrip_3d():
 
 def test_encode_decode_roundtrip_with_one_zero_axis():
     coord_rng = torch.Generator().manual_seed(456)
-    axis_rng = torch.Generator().manual_seed(789)
 
     coords = torch.randint(low=1, high=10, size=(5, 3), generator=coord_rng).float()
-    zeros = torch.randint(low=0, high=3, size=(5,), generator=axis_rng)
-
-    for i in range(coords.shape[0]):
-        coords[i, zeros[i]] = 0.0
+    coords[:, 2] = 0.0
 
     ssp = ThreeAxisSSP(ThreeAxisSSPConfig(dim=256, seed=42)).to("cpu")
     encoded = ssp.encode(coords)
@@ -40,7 +36,9 @@ def test_encode_decode_roundtrip_with_one_zero_axis():
 
 
 def test_encoder_output_is_detached():
-    coords = torch.rand(2, 81, 3, requires_grad=True) * 9.0
+    xy = torch.randint(low=1, high=10, size=(2, 81, 2), dtype=torch.float32)
+    z = torch.randint(low=0, high=10, size=(2, 81, 1), dtype=torch.float32)
+    coords = torch.cat([xy, z], dim=-1).requires_grad_(True)
     ssp = ThreeAxisSSP(ThreeAxisSSPConfig(dim=256, seed=42)).to("cpu")
 
     encoded = ssp(coords)

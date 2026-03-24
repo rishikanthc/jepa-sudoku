@@ -34,7 +34,9 @@ def test_encoder_outputs_expected_shape_and_backprop() -> None:
     transformer_config, embedding_config = _model_config()
     embedding = ThreeAxisSSP(embedding_config).to("cpu")
     model = Encoder(transformer_config, embedding=embedding).to("cpu")
-    x = torch.randint(low=0, high=10, size=(b, 81, 3), dtype=torch.float32)
+    x = torch.randint(low=1, high=10, size=(b, 81, 2), dtype=torch.float32)
+    z = torch.randint(low=0, high=10, size=(b, 81, 1), dtype=torch.float32)
+    x = torch.cat([x, z], dim=-1)
 
     out = model(x)
     assert out.shape == (b, 81, transformer_config.d_model)
@@ -54,7 +56,9 @@ def test_predictor_outputs_expected_shape_and_backprop() -> None:
     embedding = ThreeAxisSSP(embedding_config).to("cpu")
     predictor = Predictor(transformer_config, embedding=embedding).to("cpu")
 
-    query = torch.randint(low=0, high=10, size=(b, t, 3), dtype=torch.float32)
+    query = torch.randint(low=1, high=10, size=(b, t, 2), dtype=torch.float32)
+    z = torch.randint(low=0, high=10, size=(b, t, 1), dtype=torch.float32)
+    query = torch.cat([query, z], dim=-1)
     encoder_out = torch.randn(
         b, 81, transformer_config.d_model, requires_grad=True, dtype=torch.float32
     )

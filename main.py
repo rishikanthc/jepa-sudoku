@@ -26,28 +26,32 @@ def build_components() -> Tuple[str, ThreeAxisSSP, Encoder, Predictor]:
     return device, embedding, encoder, predictor
 
 
-def build_data_module() -> SudokuDataModule:
+def build_data_module(num_samples: int, seed: int) -> SudokuDataModule:
     data_config = SudokuDataConfig(
-        num_samples=2,
+        num_samples=num_samples,
         num_cells_to_mask=1,
-        seed=42,
+        seed=seed,
         batch_size=2,
         num_workers=0,
         shuffle=False,
         pin_memory=False,
         drop_last=False,
     )
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
     return SudokuDataModule(data_config)
 
 
 def main() -> None:
     device, embedding, encoder, predictor = build_components()
-    data_module = build_data_module()
+    train_module = build_data_module(num_samples=2, seed=42)
+    val_module = build_data_module(num_samples=1, seed=43)
 
     trainer = SudokuTrainer(
         encoder=encoder,
         predictor=predictor,
-        data_module=data_module,
+        data_module=train_module,
+        val_data_module=val_module,
         embedding=embedding,
         config=TrainConfig(
             max_epochs=50,
@@ -59,7 +63,10 @@ def main() -> None:
     )
 
     history = trainer.train()
-    print(f"Training completed. Final loss: {history[-1]:.6f}")
+    final_train_loss, final_val_loss = history[-1]
+    print(f"Training completed. Final train loss: {final_train_loss:.6f}")
+    if final_val_loss is not None:
+        print(f"Final val loss: {final_val_loss:.6f}")
     print(f"Epochs run: {len(history)}")
 
 

@@ -7,7 +7,7 @@ from einops import einsum, rearrange
 from jaxtyping import Float
 from torch import Tensor
 
-from ssp import ThreeAxisSSP, ThreeAxisSSPConfig
+from ssp import ThreeAxisSSP
 
 
 @dataclass
@@ -154,13 +154,17 @@ class TransformerBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, config: TransformerConfig, embedding_config: ThreeAxisSSPConfig):
+    def __init__(self, config: TransformerConfig, embedding: ThreeAxisSSP):
         super().__init__()
 
         self.config = config
-        self.embedding = ThreeAxisSSP(embedding_config)
+        if embedding.config.dim != config.d_model:
+            raise ValueError(
+                f"Embedding dim ({embedding.config.dim}) must match model d_model ({config.d_model})."
+            )
 
-        # self.embed = <SSP encoder>
+        self.embedding = embedding
+
 
         self.blocks = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layers)]
@@ -183,11 +187,16 @@ class Encoder(nn.Module):
 
 
 class Predictor(nn.Module):
-    def __init__(self, config: TransformerConfig, embedding_config: ThreeAxisSSPConfig):
+    def __init__(self, config: TransformerConfig, embedding: ThreeAxisSSP):
         super().__init__()
 
         self.config = config
-        self.embedding = ThreeAxisSSP(embedding_config)
+        if embedding.config.dim != config.d_model:
+            raise ValueError(
+                f"Embedding dim ({embedding.config.dim}) must match model d_model ({config.d_model})."
+            )
+
+        self.embedding = embedding
 
         self.blocks = nn.ModuleList(
             [TransformerBlock(config, True) for _ in range(config.n_layers)]

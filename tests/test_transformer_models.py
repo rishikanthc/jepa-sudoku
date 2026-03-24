@@ -10,7 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models import Encoder, Predictor, TransformerConfig
-from ssp import ThreeAxisSSPConfig
+from ssp import ThreeAxisSSP, ThreeAxisSSPConfig
 
 
 def _model_config() -> tuple[TransformerConfig, ThreeAxisSSPConfig]:
@@ -32,7 +32,8 @@ def _model_config() -> tuple[TransformerConfig, ThreeAxisSSPConfig]:
 def test_encoder_outputs_expected_shape_and_backprop() -> None:
     b = 4
     transformer_config, embedding_config = _model_config()
-    model = Encoder(transformer_config, embedding_config).to("cpu")
+    embedding = ThreeAxisSSP(embedding_config).to("cpu")
+    model = Encoder(transformer_config, embedding=embedding).to("cpu")
     x = torch.randint(low=0, high=10, size=(b, 81, 3), dtype=torch.float32)
 
     out = model(x)
@@ -50,7 +51,8 @@ def test_predictor_outputs_expected_shape_and_backprop() -> None:
     b = 3
     t = 12
     transformer_config, embedding_config = _model_config()
-    predictor = Predictor(transformer_config, embedding_config).to("cpu")
+    embedding = ThreeAxisSSP(embedding_config).to("cpu")
+    predictor = Predictor(transformer_config, embedding=embedding).to("cpu")
 
     query = torch.randint(low=0, high=10, size=(b, t, 3), dtype=torch.float32)
     encoder_out = torch.randn(
@@ -66,3 +68,13 @@ def test_predictor_outputs_expected_shape_and_backprop() -> None:
     assert any(
         param.grad is not None for param in predictor.parameters() if param.requires_grad
     )
+
+
+def test_encoder_and_predictor_share_embedding_instance() -> None:
+    transformer_config, embedding_config = _model_config()
+    embedding = ThreeAxisSSP(embedding_config).to("cpu")
+
+    encoder = Encoder(transformer_config, embedding=embedding).to("cpu")
+    predictor = Predictor(transformer_config, embedding=embedding).to("cpu")
+
+    assert encoder.embedding is predictor.embedding

@@ -113,3 +113,24 @@ def test_curriculum_reproducibility_across_instances() -> None:
     assert torch.equal(solution_a, solution_b)
     assert torch.equal(query_a, query_b)
     assert torch.equal(mask_a, mask_b)
+
+
+def test_non_unique_masking_position_changes_with_epoch() -> None:
+    config = SudokuDataConfig(
+        num_samples=4,
+        num_cells_to_mask=18,
+        seed=123,
+        batch_size=1,
+        shuffle=False,
+    )
+    module = SudokuDataModule(config)
+
+    module.set_epoch(0)
+    puzzle_epoch0, _, query_epoch0, _ = module.get_single(0)
+    module.set_epoch(3)
+    puzzle_epoch3, _, query_epoch3, _ = module.get_single(0)
+
+    assert puzzle_epoch0.shape == (81, 3)
+    assert query_epoch0.shape[0] == 18
+    assert query_epoch3.shape[0] == 18
+    assert not torch.equal(puzzle_epoch0, puzzle_epoch3)

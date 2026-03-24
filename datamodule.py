@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from random import Random
 from typing import Callable
 
 import torch
@@ -9,7 +8,6 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from sudoku_generator import SudokuBoardGenerator
-
 
 MaskSchedule = Callable[[int], int]
 
@@ -98,10 +96,8 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
         self.mask_cells_curriculum = mask_cells_curriculum
         self.current_epoch = 0
 
-        # Optional cache keyed by index for efficient curriculum masking.
-        # Stores full solution + a deterministic removal order for each sample.
+        # Optional cache keyed by index for efficient solution reuse.
         self._solution_cache: dict[int, torch.Tensor] = {}
-        self._removal_cache: dict[int, torch.Tensor] = {}
 
         # Base x,y coordinates are fixed, 1..9 in row-major order.
         xs = torch.arange(1, 10)
@@ -123,23 +119,35 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
 
         return max(0, min(64, num_cells))
 
-    def _get_or_build_template(self, index: int) -> tuple[Tensor, Tensor]:
-        if index in self._solution_cache and index in self._removal_cache:
-            return self._solution_cache[index], self._removal_cache[index]
+    def _get_or_build_template(self, index: int) -> Tensor:
+        if index in self._solution_cache:
+            return self._solution_cache[index]
 
         sample_seed = self.seed + index
         generator = SudokuBoardGenerator(seed=sample_seed)
         solution_board = generator.generate_full_board()
         solution_values = _board_to_value_tensor(solution_board)
 
-        rng = Random(sample_seed)
-        removal_order = list(range(81))
-        rng.shuffle(removal_order)
-        removal_order_tensor = torch.tensor(removal_order, dtype=torch.long)
-
         self._solution_cache[index] = solution_values
-        self._removal_cache[index] = removal_order_tensor
-        return solution_values, removal_order_tensor
+        return solution_values
+
+    def _mask_seed(self, index: int) -> int:
+        # Combine factors that are stable for a given index/epoch but vary
+        # when either epoch or the requested number of masked cells changes.
+        return (
+            self.seed
+            + (index * 100_0003)
+            + (self.current_epoch * 10_007)
+            + self._num_cells_for_epoch()
+        )
+
+    def _masked_indices(self, index: int, num_cells_to_mask: int) -> Tensor:
+        if num_cells_to_mask <= 0:
+            return torch.empty((0,), dtype=torch.long)
+
+        generator = torch.Generator()
+        generator.manual_seed(self._mask_seed(index))
+        return torch.randperm(81, generator=generator)[:num_cells_to_mask]
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         if not 0 <= index < self.num_samples:
@@ -150,34 +158,27 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
         num_cells_to_mask = self._num_cells_for_epoch()
 
         if self.unique_solution:
-            if self.mask_cells_curriculum is not None:
-                sample_seed = self.seed + index
-                puzzle_data = SudokuBoardGenerator(seed=sample_seed).generate_puzzle(
-                    removed_cells=num_cells_to_mask,
-                    unique_solution=True,
-                )
-                solution_values = _board_to_value_tensor(puzzle_data.solution)
-                puzzle_values = _board_to_value_tensor(puzzle_data.puzzle)
-            else:
-                sample_seed = self.seed + index
-                puzzle_data = SudokuBoardGenerator(seed=sample_seed).generate_puzzle(
-                    removed_cells=self.num_cells_to_mask,
-                    unique_solution=True,
-                )
-                solution_values = _board_to_value_tensor(puzzle_data.solution)
-                puzzle_values = _board_to_value_tensor(puzzle_data.puzzle)
+            sample_seed = self.seed + index + self.current_epoch * 10_009
+            puzzle_data = SudokuBoardGenerator(seed=sample_seed).generate_puzzle(
+                removed_cells=num_cells_to_mask,
+                unique_solution=True,
+            )
+            solution_values = _board_to_value_tensor(puzzle_data.solution)
+            puzzle_values = _board_to_value_tensor(puzzle_data.puzzle)
             if int((puzzle_values == 0).sum()) != num_cells_to_mask:
-                solution_values, removal_order = self._get_or_build_template(index)
+                solution_values = self._get_or_build_template(index)
                 puzzle_values = solution_values.clone()
                 n = min(num_cells_to_mask, 64)
                 if n > 0:
-                    puzzle_values[removal_order[:n]] = 0.0
+                    masked_indices = self._masked_indices(index, n)
+                    puzzle_values[masked_indices] = 0.0
         else:
-            solution_values, removal_order = self._get_or_build_template(index)
+            solution_values = self._get_or_build_template(index)
             puzzle_values = solution_values.clone()
             n = min(num_cells_to_mask, 64)
             if n > 0:
-                puzzle_values[removal_order[:n]] = 0.0
+                masked_indices = self._masked_indices(index, n)
+                puzzle_values[masked_indices] = 0.0
 
         solution = torch.empty((81, 3), dtype=torch.float32)
         solution[:, :2] = self._xy

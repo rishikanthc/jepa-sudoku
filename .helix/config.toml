@@ -1,3 +1,4 @@
-theme = "zed_onelight"
+theme = "zed_onedark"
+
 [editor.lsp]
 display-inlay-hints = true

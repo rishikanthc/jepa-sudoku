@@ -11,37 +11,37 @@ from ssp import ThreeAxisSSP, ThreeAxisSSPConfig
 from trainermodule import SudokuTrainer, TrainConfig
 
 
-def build_data_module(config: DictConfig) -> SudokuDataModule:
+def build_data_module(data_config: DictConfig, curriculum_config: DictConfig) -> SudokuDataModule:
     curriculum = None
-    if config.curriculum.enabled and config.curriculum.mode == "linear":
+    if curriculum_config.enabled and curriculum_config.mode == "linear":
         curriculum = LinearMaskCurriculum(
-            start=config.data.num_cells_to_mask,
-            max_mask=config.curriculum.max_mask,
-            num_epochs=config.curriculum.num_epochs,
+            start=data_config.num_cells_to_mask,
+            max_mask=curriculum_config.max_mask,
+            num_epochs=curriculum_config.num_epochs,
         )
 
-    if config.curriculum.enabled and config.curriculum.mode not in {"linear", "adaptive"}:
+    if curriculum_config.enabled and curriculum_config.mode not in {"linear", "adaptive"}:
         raise ValueError(
-            f"Unsupported curriculum.mode={config.curriculum.mode}. "
+            f"Unsupported curriculum.mode={curriculum_config.mode}. "
             "Use 'linear' or 'adaptive'."
         )
 
-    data_config = SudokuDataConfig(
-        num_samples=config.num_samples,
-        num_cells_to_mask=config.num_cells_to_mask,
-        seed=config.seed,
-        unique_solution=config.unique_solution,
+    resolved_data_config = SudokuDataConfig(
+        num_samples=data_config.num_samples,
+        num_cells_to_mask=data_config.num_cells_to_mask,
+        seed=data_config.seed,
+        unique_solution=data_config.unique_solution,
         mask_cells_curriculum=curriculum,
-        batch_size=config.batch_size,
-        num_workers=config.num_workers,
-        shuffle=config.shuffle,
-        pin_memory=config.pin_memory,
-        drop_last=config.drop_last,
+        batch_size=data_config.batch_size,
+        num_workers=data_config.num_workers,
+        shuffle=data_config.shuffle,
+        pin_memory=data_config.pin_memory,
+        drop_last=data_config.drop_last,
     )
-    if data_config.num_samples <= 0:
+    if resolved_data_config.num_samples <= 0:
         raise ValueError("num_samples must be positive")
 
-    return SudokuDataModule(data_config)
+    return SudokuDataModule(resolved_data_config)
 
 
 def build_components(config: DictConfig) -> tuple[str, ThreeAxisSSP, Encoder, Predictor]:
@@ -69,8 +69,12 @@ def build_components(config: DictConfig) -> tuple[str, ThreeAxisSSP, Encoder, Pr
 def main(config: DictConfig) -> None:
     OmegaConf.resolve(config)
 
-    train_data = build_data_module(config.data)
-    val_data = build_data_module(config.validation) if config.validation.enabled else None
+    train_data = build_data_module(config.data, config.curriculum)
+    val_data = (
+        build_data_module(config.validation, config.curriculum)
+        if config.validation.enabled
+        else None
+    )
 
     device, embedding, encoder, predictor = build_components(config)
     trainer = SudokuTrainer(

@@ -13,11 +13,17 @@ from trainermodule import SudokuTrainer, TrainConfig
 
 def build_data_module(config: DictConfig) -> SudokuDataModule:
     curriculum = None
-    if config.curriculum.enabled:
+    if config.curriculum.enabled and config.curriculum.mode == "linear":
         curriculum = LinearMaskCurriculum(
-            start=config.curriculum.start,
+            start=config.data.num_cells_to_mask,
             max_mask=config.curriculum.max_mask,
             num_epochs=config.curriculum.num_epochs,
+        )
+
+    if config.curriculum.enabled and config.curriculum.mode not in {"linear", "adaptive"}:
+        raise ValueError(
+            f"Unsupported curriculum.mode={config.curriculum.mode}. "
+            "Use 'linear' or 'adaptive'."
         )
 
     data_config = SudokuDataConfig(
@@ -79,11 +85,13 @@ def main(config: DictConfig) -> None:
             learning_rate=config.training.learning_rate,
             min_delta=config.training.min_delta,
             device=device,
-            curriculum_enabled=config.training.curriculum_enabled,
-            curriculum_step=config.training.curriculum_step,
-            curriculum_patience=config.training.curriculum_patience,
-            curriculum_min_delta=config.training.curriculum_min_delta,
-            curriculum_max_mask=config.training.curriculum_max_mask,
+            curriculum_enabled=config.curriculum.enabled,
+            curriculum_mode=config.curriculum.mode,
+            curriculum_step=config.curriculum.step,
+            curriculum_patience=config.curriculum.patience,
+            curriculum_min_delta=config.curriculum.min_delta,
+            curriculum_max_mask=config.curriculum.max_mask,
+            curriculum_num_epochs=config.curriculum.num_epochs,
         ),
     )
 

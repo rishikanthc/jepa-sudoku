@@ -24,12 +24,7 @@ data:
   num_workers: 0
   shuffle: false
   pin_memory: false
-  drop_last: false
-  curriculum:
-    enabled: false
-    start: 1
-    max_mask: 18
-    num_epochs: 20
+  drop_last: true
 
 validation:
   enabled: false
@@ -42,11 +37,15 @@ validation:
   shuffle: false
   pin_memory: false
   drop_last: false
-  curriculum:
-    enabled: true
-    start: 1
-    max_mask: 18
-    num_epochs: 20
+
+curriculum:
+  enabled: true
+  mode: adaptive
+  max_mask: 18
+  num_epochs: 20
+  step: 1
+  patience: 16
+  min_delta: 1.0e-6
 
 training:
   max_epochs: 200
@@ -54,8 +53,3 @@ training:
   learning_rate: 0.003
   min_delta: 1.0e-6
   device: "cpu"
-  curriculum_enabled: true
-  curriculum_step: 1
-  curriculum_patience: 16
-  curriculum_min_delta: 1.0e-6
-  curriculum_max_mask: 18

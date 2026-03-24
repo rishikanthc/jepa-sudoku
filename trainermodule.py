@@ -21,10 +21,12 @@ class TrainConfig:
     min_delta: float = 1e-6
     device: str = "cpu"
     curriculum_enabled: bool = False
+    curriculum_mode: str = "adaptive"
     curriculum_step: int = 1
     curriculum_patience: int = 10
     curriculum_min_delta: float = 1e-6
     curriculum_max_mask: int = 64
+    curriculum_num_epochs: int = 20
 
 
 class SudokuTrainer:
@@ -74,6 +76,9 @@ class SudokuTrainer:
         return coords
 
     def _maybe_increase_difficulty(self, monitor_loss: float, best_loss: float) -> bool:
+        if self.config.curriculum_mode != "adaptive":
+            return False
+
         if (
             not self.config.curriculum_enabled
             or self.data_module.current_num_cells_to_mask >= self.config.curriculum_max_mask

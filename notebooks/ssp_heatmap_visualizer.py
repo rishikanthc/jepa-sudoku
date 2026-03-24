@@ -31,7 +31,11 @@ def build_similarity_views(dim: int, seed: int, x0: int, y0: int, z0: int):
     target = torch.tensor([x0, y0, z0], dtype=torch.float32, device=ssp.device)
     target_ssp = ssp.encode(target)
     similarities = ssp.similarity_to_codebook(target_ssp).cpu().numpy()
-    sim_volume = similarities.reshape(9, 9, 9)  # (x, y, z)
+    # codebook is defined over x,y,z in [0, 9], so this is 10x10x10=1000.
+    full_volume = similarities.reshape(10, 10, 10)
+
+    # Visualization uses x,y,z in [1, 9], matching the Sudoku-style convention.
+    sim_volume = full_volume[1:, 1:, 1:]  # (9, 9, 9)
     sim_volume = np.clip(sim_volume, a_min=0.0, a_max=None)
 
     x_index = slice(None) if x0 == 0 else x0 - 1

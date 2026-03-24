@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -37,6 +38,51 @@ class ThreeAxisSSPConfig:
     freq_scale_max: float = 3.0
 
 
+@dataclass
+class SSPHypervectorStore:
+    """
+    Serialized bundle of the SSP base hypervectors.
+    """
+
+    config: ThreeAxisSSPConfig
+    K: torch.Tensor
+    coords: torch.Tensor
+    codebook: torch.Tensor
+
+    def to(self, device: str | torch.device) -> "SSPHypervectorStore":
+        device = torch.device(device)
+        return SSPHypervectorStore(
+            config=self.config,
+            K=self.K.to(device),
+            coords=self.coords.to(device),
+            codebook=self.codebook.to(device),
+        )
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "version": 1,
+                "config": asdict(self.config),
+                "K": self.K.cpu(),
+                "coords": self.coords.cpu(),
+                "codebook": self.codebook.cpu(),
+            },
+            path,
+        )
+
+    @classmethod
+    def load(cls, path: str | Path, device: str | torch.device = "cpu") -> "SSPHypervectorStore":
+        loaded = torch.load(Path(path), map_location=device)
+        return cls(
+            config=ThreeAxisSSPConfig(**loaded["config"]),
+            K=loaded["K"].to(device),
+            coords=loaded["coords"].to(device),
+            codebook=loaded["codebook"].to(device),
+        )
+
+
 class ThreeAxisSSP:
     """
     Semantic Spatial Pointer encoder/decoder for a bounded 3-axis discrete space.
@@ -58,24 +104,40 @@ class ThreeAxisSSP:
         - Supports batch encoding and decoding
     """
 
-    def __init__(self, config: ThreeAxisSSPConfig):
+    def __init__(
+        self,
+        config: ThreeAxisSSPConfig,
+        *,
+        store: SSPHypervectorStore | None = None,
+    ):
         self.config = config
         assert config.dim % 2 == 0, "dim must be even"
         self.device = torch.device("cpu")
 
         self.m = config.dim // 2  # number of frequency channels
 
-        # Build wavevector matrix K of shape (m, 3)
-        self.K = self._make_wavevectors(
-            m=self.m,
-            seed=config.seed,
-            scale_min=config.freq_scale_min,
-            scale_max=config.freq_scale_max,
-        )  # (m, 3)
+        if store is None:
+            # Build wavevector matrix K of shape (m, 3)
+            self.K = self._make_wavevectors(
+                m=self.m,
+                seed=config.seed,
+                scale_min=config.freq_scale_min,
+                scale_max=config.freq_scale_max,
+            )  # (m, 3)
 
-        # Build the bounded coordinate codebook
-        self.coords = self._make_all_valid_coords()  # (1000, 3)
-        self.codebook = self.encode(self.coords)  # (1000, dim)
+            # Build the bounded coordinate codebook
+            self.coords = self._make_all_valid_coords()  # (1000, 3)
+            self.codebook = self.encode(self.coords)  # (1000, dim)
+        else:
+            if store.config != config:
+                raise ValueError(
+                    "Store configuration does not match provided config. "
+                    "Pass the store's config or use from_hypervector_store."
+                )
+            self._validate_store(store)
+            self.K = store.K.to(self.device)
+            self.coords = store.coords.to(self.device)
+            self.codebook = store.codebook.to(self.device)
 
     def to(self, device: torch.device | str) -> "ThreeAxisSSP":
         """
@@ -86,6 +148,57 @@ class ThreeAxisSSP:
         self.coords = self.coords.to(self.device)
         self.codebook = self.codebook.to(self.device)
         return self
+
+    def hypervector_store(self) -> SSPHypervectorStore:
+        """
+        Return the exact current base hypervectors used by this instance.
+        """
+        return SSPHypervectorStore(
+            config=self.config,
+            K=self.K.detach().cpu(),
+            coords=self.coords.detach().cpu(),
+            codebook=self.codebook.detach().cpu(),
+        )
+
+    def save_hypervectors(self, path: str | Path) -> None:
+        """
+        Persist base hypervectors so encoding/decoding can be resumed later
+        with the same exact basis.
+        """
+        self.hypervector_store().save(path)
+
+    @classmethod
+    def from_hypervector_store(
+        cls,
+        path_or_store: str | Path | SSPHypervectorStore,
+        *,
+        device: str | torch.device = "cpu",
+    ) -> "ThreeAxisSSP":
+        """
+        Restore an SSP instance from a serialized or in-memory bundle.
+        """
+        if isinstance(path_or_store, (str, Path)):
+            store = SSPHypervectorStore.load(path_or_store, device=device)
+        else:
+            store = path_or_store.to(device)
+        return cls(store.config, store=store)
+
+    @staticmethod
+    def _validate_store(store: SSPHypervectorStore) -> None:
+        if store.config.dim % 2 != 0:
+            raise ValueError("Invalid store: embedded config has odd dim")
+        if store.config.dim // 2 != store.K.shape[0]:
+            raise ValueError(
+                "Invalid store: K first dim must match dim/2 from stored config"
+            )
+        if store.codebook.shape[1] != store.config.dim:
+            raise ValueError("Invalid store: codebook dim must match stored config dim")
+        if store.K.ndim != 2 or store.K.shape[1] != 3:
+            raise ValueError("Invalid store: K must have shape (m, 3)")
+        if store.coords.ndim != 2 or store.coords.shape[1] != 3:
+            raise ValueError("Invalid store: coords must have shape (N, 3)")
+        if store.codebook.ndim != 2:
+            raise ValueError("Invalid store: codebook must be 2D")
 
     @staticmethod
     def _make_wavevectors(

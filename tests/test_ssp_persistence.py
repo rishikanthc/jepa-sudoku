@@ -36,7 +36,7 @@ def test_save_and_reload_hypervector_store(tmp_path: Path) -> None:
     restored = ThreeAxisSSP.from_hypervector_store(out, device="cpu")
     restored_encoded = restored.encode(sample)
 
-    assert torch.equal(ssp.hypervector_store().config, restored.hypervector_store().config)
+    assert ssp.hypervector_store().config == restored.hypervector_store().config
     assert torch.allclose(encoded, restored_encoded, atol=0.0, rtol=0.0)
     assert torch.equal(restored.decode(encoded)[0], sample)
 

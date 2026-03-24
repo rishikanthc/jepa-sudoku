@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
@@ -83,7 +84,7 @@ class SSPHypervectorStore:
         )
 
 
-class ThreeAxisSSP:
+class ThreeAxisSSP(nn.Module):
     """
     Semantic Spatial Pointer encoder/decoder for a bounded 3-axis discrete space.
 
@@ -110,15 +111,15 @@ class ThreeAxisSSP:
         *,
         store: SSPHypervectorStore | None = None,
     ):
+        super().__init__()
         self.config = config
         assert config.dim % 2 == 0, "dim must be even"
-        self.device = torch.device("cpu")
 
         self.m = config.dim // 2  # number of frequency channels
 
         if store is None:
             # Build wavevector matrix K of shape (m, 3)
-            self.K = self._make_wavevectors(
+            K = self._make_wavevectors(
                 m=self.m,
                 seed=config.seed,
                 scale_min=config.freq_scale_min,
@@ -126,8 +127,8 @@ class ThreeAxisSSP:
             )  # (m, 3)
 
             # Build the bounded coordinate codebook
-            self.coords = self._make_all_valid_coords()  # (1000, 3)
-            self.codebook = self.encode(self.coords)  # (1000, dim)
+            coords = self._make_all_valid_coords()  # (1000, 3)
+            codebook = self._encode_with_k(coords=coords, K=K, dim=config.dim)  # (1000, dim)
         else:
             if store.config != config:
                 raise ValueError(
@@ -135,19 +136,29 @@ class ThreeAxisSSP:
                     "Pass the store's config or use from_hypervector_store."
                 )
             self._validate_store(store)
-            self.K = store.K.to(self.device)
-            self.coords = store.coords.to(self.device)
-            self.codebook = store.codebook.to(self.device)
+            K = store.K
+            coords = store.coords
+            codebook = store.codebook
 
-    def to(self, device: torch.device | str) -> "ThreeAxisSSP":
+        self.register_buffer("K", K)
+        self.register_buffer("coords", coords)
+        self.register_buffer("codebook", codebook)
+
+    @property
+    def device(self) -> torch.device:
+        return self.K.device
+
+    @torch.no_grad()
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
         """
-        Move model tensors to device.
+        Forward alias for encoding.
+
+        Accepts:
+            coords: (B, 81, 3) or any shape (..., 3) coordinates.
+        Returns:
+            (B, 81, dim) or (..., dim) tensor.
         """
-        self.device = torch.device(device)
-        self.K = self.K.to(self.device)
-        self.coords = self.coords.to(self.device)
-        self.codebook = self.codebook.to(self.device)
-        return self
+        return self.encode(coords)
 
     def hypervector_store(self) -> SSPHypervectorStore:
         """
@@ -266,7 +277,7 @@ class ThreeAxisSSP:
 
         valid = (x >= 0) & (x <= 9) & (y >= 0) & (y <= 9) & (z >= 0) & (z <= 9)
 
-        if not torch.all(valid):
+        if not torch.all(valid).item():
             bad = coords[~valid]
             raise ValueError(
                 "Found out-of-range coordinates. "
@@ -274,6 +285,7 @@ class ThreeAxisSSP:
                 f"Examples of invalid rows: {bad[:5]}"
             )
 
+    @torch.no_grad()
     def encode(self, coords: torch.Tensor) -> torch.Tensor:
         """
         Encode coordinates into SSP vectors.
@@ -284,29 +296,40 @@ class ThreeAxisSSP:
         Returns:
             ssp: (..., dim) normalized SSP vectors
         """
-        coords = coords.to(self.K.dtype).to(self.device)
+        coords = coords.to(dtype=self.K.dtype, device=self.device)
+        squeeze_batch = coords.ndim == 1
+        if squeeze_batch:
+            coords = coords[None, :]
         self._validate_coords(coords)
+        encoded = self._encode_with_k(
+            coords=coords,
+            K=self.K,
+            dim=self.config.dim,
+        )
+        if squeeze_batch:
+            return encoded[0]
+        return encoded
 
-        # Flatten batch for easier math
-        flat_coords = coords.reshape(-1, coords.shape[-1])  # (B, 3)
-
-        # phase = coords @ K^T
-        # (B, 3) @ (3, m) -> (B, m)
-        phase = flat_coords @ self.K.T
+    def _encode_with_k(
+        self,
+        coords: torch.Tensor,
+        K: torch.Tensor,
+        dim: int,
+    ) -> torch.Tensor:
+        # Flatten leading dimensions and compute all phases in one matmul.
+        flat_coords = rearrange(coords, "... c -> (...) c")
+        phase = torch.einsum("...c,mc->...m", flat_coords, K)
 
         cos_part = torch.cos(phase)
         sin_part = torch.sin(phase)
 
-        ssp = torch.cat([cos_part, sin_part], dim=-1)  # (B, dim)
+        ssp = torch.cat([cos_part, sin_part], dim=-1)
         ssp = F.normalize(ssp, dim=-1)
 
-        # Restore original batch shape
-        # `einops` versions differ on parenthesized-ellipsis handling,
-        # so restore shape with a direct reshape.
-        out_shape = coords.shape[:-1] + (self.config.dim,)
-        ssp = ssp.reshape(out_shape)
-        return ssp
+        out_shape = coords.shape[:-1] + (dim,)
+        return ssp.reshape(out_shape)
 
+    @torch.no_grad()
     def similarity_to_codebook(self, ssp: torch.Tensor) -> torch.Tensor:
         """
         Compute cosine similarity between input SSPs and all valid codebook entries.
@@ -317,10 +340,10 @@ class ThreeAxisSSP:
         Returns:
             sims: (..., 1000)
         """
-        ssp = ssp.to(self.device)
+        ssp = ssp.to(dtype=self.K.dtype, device=self.device)
         batch_shape = ssp.shape[:-1]
 
-        flat_ssp = ssp.reshape(-1, ssp.shape[-1])
+        flat_ssp = rearrange(ssp, "... d -> (...) d")
         flat_ssp = F.normalize(flat_ssp, dim=-1)
 
         # codebook is already normalized
@@ -328,6 +351,7 @@ class ThreeAxisSSP:
         sims = sims.reshape(batch_shape + (self.codebook.shape[0],))
         return sims
 
+    @torch.no_grad()
     def decode(self, ssp: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Full decode: recover [x, y, z] by nearest codebook match.
@@ -351,6 +375,7 @@ class ThreeAxisSSP:
         best_sim = best_sim.reshape(sims.shape[:-1])
         return decoded, best_sim
 
+    @torch.no_grad()
     def decode_z_given_xy(
         self,
         ssp: torch.Tensor,
@@ -367,8 +392,8 @@ class ThreeAxisSSP:
             z_hat: (...,) tensor of decoded z values in [0,9]
             best_similarity: (...,)
         """
-        ssp = ssp.to(self.device)
-        xy = xy.to(self.device).float()
+        ssp = ssp.to(dtype=self.K.dtype, device=self.device)
+        xy = xy.to(dtype=self.K.dtype, device=self.device)
 
         if xy.shape[-1] != 2:
             raise ValueError(f"Expected xy shape (..., 2), got {tuple(xy.shape)}")
@@ -376,15 +401,23 @@ class ThreeAxisSSP:
         x = xy[..., 0]
         y = xy[..., 1]
         valid = (x >= 0) & (x <= 9) & (y >= 0) & (y <= 9)
-        if not torch.all(valid):
+        if not torch.all(valid).item():
             bad = xy[~valid]
             raise ValueError(
                 f"Found out-of-range x/y. Expected x,y in [0,9]. Examples: {bad[:5]}"
             )
 
         batch_shape = xy.shape[:-1]
-        flat_ssp = ssp.reshape(-1, ssp.shape[-1])
-        flat_xy = xy.reshape(-1, xy.shape[-1])
+        flat_ssp = rearrange(ssp, "... d -> (...) d")
+        flat_ssp = F.normalize(flat_ssp, dim=-1)
+        flat_xy = rearrange(xy, "... c -> (...) c")
+
+        if flat_ssp.shape[0] != flat_xy.shape[0]:
+            raise ValueError(
+                "decode_z_given_xy received mismatched batch sizes. "
+                f"Got ssp batch {tuple(flat_ssp.shape[:-1])}, xy batch {tuple(flat_xy.shape[:-1])} "
+                "after flattening to 2D."
+            )
 
         B = flat_xy.shape[0]
         z_candidates = torch.arange(0, 10, device=self.device).float()  # (10,)
@@ -397,11 +430,10 @@ class ThreeAxisSSP:
         candidate_coords = torch.cat([xy_expanded, z_expanded], dim=-1)  # (B, 10, 3)
 
         candidate_ssp = self.encode(candidate_coords)  # (B, 10, dim)
-        flat_ssp = F.normalize(flat_ssp, dim=-1)
 
         # Similarity per candidate z:
         # (B, 1, dim) * (B, 10, dim) -> (B, 10)
-        sims = (flat_ssp[:, None, :] * candidate_ssp).sum(dim=-1)
+        sims = torch.einsum("bd,bzd->bz", flat_ssp, candidate_ssp)
 
         best_idx = sims.argmax(dim=-1)  # (B,)
         best_sim = sims.gather(1, best_idx[:, None]).squeeze(1)
@@ -411,6 +443,7 @@ class ThreeAxisSSP:
         best_sim = best_sim.reshape(batch_shape)
         return z_hat, best_sim
 
+    @torch.no_grad()
     def make_noisy_copy(
         self, ssp: torch.Tensor, noise_std: float = 0.05
     ) -> torch.Tensor:

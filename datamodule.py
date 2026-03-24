@@ -31,10 +31,10 @@ class LinearMaskCurriculum:
     def __post_init__(self) -> None:
         if self.num_epochs < 0:
             raise ValueError("num_epochs must be >= 0")
-        if not 0 <= self.start <= 80:
-            raise ValueError("start must be between 0 and 80")
-        if not 0 <= self.max_mask <= 80:
-            raise ValueError("max_mask must be between 0 and 80")
+        if not 0 <= self.start <= 64:
+            raise ValueError("start must be between 0 and 64")
+        if not 0 <= self.max_mask <= 64:
+            raise ValueError("max_mask must be between 0 and 64")
         if self.max_mask < self.start:
             raise ValueError("max_mask must be >= start")
 
@@ -88,8 +88,8 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
     ) -> None:
         if num_samples < 0:
             raise ValueError("num_samples must be >= 0")
-        if not 0 <= num_cells_to_mask <= 80:
-            raise ValueError("num_cells_to_mask must be between 0 and 80 inclusive")
+        if not 0 <= num_cells_to_mask <= 64:
+            raise ValueError("num_cells_to_mask must be between 0 and 64 inclusive")
 
         self.num_samples = num_samples
         self.num_cells_to_mask = num_cells_to_mask
@@ -121,7 +121,7 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
         else:
             num_cells = int(self.mask_cells_curriculum(self.current_epoch))
 
-        return max(0, min(80, num_cells))
+        return max(0, min(64, num_cells))
 
     def _get_or_build_template(self, index: int) -> tuple[Tensor, Tensor]:
         if index in self._solution_cache and index in self._removal_cache:
@@ -169,13 +169,13 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
             if int((puzzle_values == 0).sum()) != num_cells_to_mask:
                 solution_values, removal_order = self._get_or_build_template(index)
                 puzzle_values = solution_values.clone()
-                n = min(num_cells_to_mask, 80)
+                n = min(num_cells_to_mask, 64)
                 if n > 0:
                     puzzle_values[removal_order[:n]] = 0.0
         else:
             solution_values, removal_order = self._get_or_build_template(index)
             puzzle_values = solution_values.clone()
-            n = min(num_cells_to_mask, 80)
+            n = min(num_cells_to_mask, 64)
             if n > 0:
                 puzzle_values[removal_order[:n]] = 0.0
 

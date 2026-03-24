@@ -1,0 +1,56 @@
+defaults:
+  - _self_
+
+seed: 123
+
+ssp:
+  dim: 256
+  seed: 42
+
+model:
+  context_size: 81
+  n_heads: 4
+  head_dim: 64
+  n_layers: 2
+  d_ff: 256
+  dropout: 0.0
+
+data:
+  num_samples: 8
+  num_cells_to_mask: 18
+  seed: 123
+  unique_solution: false
+  batch_size: 8
+  num_workers: 0
+  shuffle: false
+  pin_memory: false
+  drop_last: false
+  curriculum:
+    enabled: true
+    start: 1
+    max_mask: 18
+    num_epochs: 20
+
+validation:
+  enabled: false
+  num_samples: 1
+  num_cells_to_mask: 18
+  seed: 43
+  unique_solution: false
+  batch_size: 1
+  num_workers: 0
+  shuffle: false
+  pin_memory: false
+  drop_last: false
+  curriculum:
+    enabled: true
+    start: 1
+    max_mask: 18
+    num_epochs: 20
+
+training:
+  max_epochs: 200
+  patience: 1000
+  learning_rate: 0.003
+  min_delta: 1.0e-6
+  device: "cpu"

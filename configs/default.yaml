@@ -1,31 +1,48 @@
 defaults:
   - _self_
 
+# Global seed used across the run to make data generation and initialization deterministic.
 seed: 123
 
+# SSP configuration used by the fixed hypervector encoder.
+# `dim` is the output embedding dimension and `seed` controls randomized basis vectors.
 ssp:
   dim: 512
   seed: 42
 
+# Model architecture for the Transformer-based encoder/predictor.
+# `context_size` is the fixed token count for board context.
+# `n_heads`, `head_dim`, `n_layers`, and `d_ff` define the attention stack.
+# `dropout` applies to attention/MLP branches.
 model:
   context_size: 81
-  n_heads: 4
-  head_dim: 128
+  n_heads: 2
+  head_dim: 256
   n_layers: 2
-  d_ff: 256
-  dropout: 0.0
+  d_ff: 1024
+  dropout: 0.1
 
+# Data generation settings for train samples.
+# `num_samples` controls dataset size.
+# `num_cells_to_mask` sets the number of hidden cells (targets) per sample.
+# `unique_solution` toggles puzzle generation constraint from generator.
+# `randomize_mask_per_access` keeps masking deterministic across epochs (`false`) or
+# re-samples per-access (`true`) for randomized curriculum-style training.
+# Loader fields control batching/parallelism behavior.
 data:
-  num_samples: 8
-  num_cells_to_mask: 1
+  num_samples: 24
+  num_cells_to_mask: 2
   seed: 123
-  unique_solution: true
-  batch_size: 8
+  unique_solution: false
+  randomize_mask_per_access: false
+  batch_size: 24
   num_workers: 0
   shuffle: false
   pin_memory: false
   drop_last: true
 
+# Validation split settings.
+# These fields mirror train data options for validation sampling.
 validation:
   enabled: false
   num_samples: 1
@@ -38,18 +55,28 @@ validation:
   pin_memory: false
   drop_last: false
 
+# Curriculum settings controlling mask-count progression.
+# `mode` selects fixed-step linear or adaptive progression based on plateaued validation/train loss.
+# `max_mask` is the target upper bound for masked cells.
 curriculum:
   enabled: true
   mode: adaptive
-  max_mask: 18
+  max_mask: 64
   num_epochs: 20
   step: 1
-  patience: 16
+  patience: 32
   min_delta: 1.0e-6
 
+# Training loop controls.
+# `max_epochs` and `patience` define stopping behavior.
+# `learning_rate` and `min_delta` govern optimizer updates and improvement threshold.
+# `prototype_logit_scale` sharpens or softens prototype-classification logits.
+# Start with 1.0 for stable debugging and tune upward only after the fixed overfit case works.
+# `device` sets compute device (`cpu` or `cuda`).
 training:
-  max_epochs: 200
+  max_epochs: 2000
   patience: 1000
-  learning_rate: 0.003
-  min_delta: 1.0e-6
+  learning_rate: 1e-4
+  prototype_logit_scale: 10.0
+  min_delta: 1e-6
   device: "cpu"

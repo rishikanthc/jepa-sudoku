@@ -1,13 +1,14 @@
 import math
 from dataclasses import dataclass
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import einsum, rearrange
 from jaxtyping import Float
 from torch import Tensor
 
-from ssp import ThreeAxisSSP
+from ssp import TwoAxisSSP, TwoAxisSSPConfig
 
 
 @dataclass
@@ -22,6 +23,94 @@ class TransformerConfig:
     @property
     def d_model(self) -> int:
         return self.n_heads * self.head_dim
+
+
+class SudokuRepresentation(nn.Module):
+    def __init__(self, d_model: int, seed: int):
+        super().__init__()
+        self.d_model = d_model
+        self.coordinate_encoder = TwoAxisSSP(TwoAxisSSPConfig(dim=d_model, seed=seed))
+        prototypes = self._build_digit_codebook(d_model=d_model, seed=seed + 1)
+        self.register_buffer("_digit_prototypes", prototypes)
+
+    @staticmethod
+    def _normalize(x: Tensor, eps: float = 1e-8) -> Tensor:
+        return x / torch.linalg.norm(x, dim=-1, keepdim=True).clamp_min(eps)
+
+    @staticmethod
+    def _build_digit_codebook(d_model: int, seed: int) -> Tensor:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+        prototypes = torch.randn(9, d_model, generator=generator)
+
+        # When d_model >= 9, QR gives a simple deterministic orthogonal-ish basis.
+        if d_model >= 9:
+            q, _ = torch.linalg.qr(prototypes.T, mode="reduced")
+            prototypes = q.T
+
+        return F.normalize(prototypes, dim=-1)
+
+    def digit_prototypes(self) -> Float[Tensor, "9 d"]:
+        return self._digit_prototypes
+
+    def encode_coordinates(
+        self, xy_or_xyz: Float[Tensor, "... c"]
+    ) -> Float[Tensor, "... d"]:
+        if xy_or_xyz.shape[-1] not in {2, 3}:
+            raise ValueError(
+                f"Expected coordinates with last dim 2 or 3, got {tuple(xy_or_xyz.shape)}"
+            )
+        coords = xy_or_xyz[..., :2]
+        encoded = self.coordinate_encoder.encode(coords)
+        if encoded.shape[-1] != self.d_model:
+            raise ValueError(
+                f"Coordinate encoding dim ({encoded.shape[-1]}) must match d_model ({self.d_model})."
+            )
+        return encoded
+
+    def bind(
+        self,
+        coord_vecs: Float[Tensor, "... d"],
+        digit_vecs: Float[Tensor, "... d"],
+    ) -> Float[Tensor, "... d"]:
+        # Simple VSA-style binding for stable debugging: elementwise product + renormalize.
+        return self._normalize(coord_vecs * digit_vecs)
+
+    def _lookup_digit_vectors(self, digits: Tensor) -> Tensor:
+        digit_indices = digits.to(dtype=torch.long) - 1
+        if digit_indices.numel() > 0:
+            min_digit = int(digits.min().item())
+            max_digit = int(digits.max().item())
+            if min_digit < 1 or max_digit > 9:
+                raise ValueError(
+                    f"Digit values must lie in [1, 9], got range [{min_digit}, {max_digit}]."
+                )
+        return self._digit_prototypes[digit_indices]
+
+    def encode_clues(
+        self, puzzle_xyz: Float[Tensor, "b s 3"]
+    ) -> Float[Tensor, "b s d"]:
+        coord_vecs = self.encode_coordinates(puzzle_xyz)
+        digit_vecs = self._lookup_digit_vectors(puzzle_xyz[..., 2])
+        return self.bind(coord_vecs, digit_vecs)
+
+    def encode_queries(
+        self, query_xyz: Float[Tensor, "b t 3"]
+    ) -> Float[Tensor, "b t d"]:
+        return self.encode_coordinates(query_xyz)
+
+    def logits_from_predictions(
+        self,
+        pred_vectors: Float[Tensor, "b t d"],
+        logit_scale: float = 1.0,
+    ) -> Float[Tensor, "b t 9"]:
+        if logit_scale <= 0.0:
+            raise ValueError(f"logit_scale must be positive, got {logit_scale}.")
+        normalized_pred = self._normalize(pred_vectors)
+        normalized_prototypes = self._normalize(self._digit_prototypes)
+        return logit_scale * torch.einsum(
+            "btd,vd->btv", normalized_pred, normalized_prototypes
+        )
 
 
 class SA(nn.Module):
@@ -55,7 +144,7 @@ class SA(nn.Module):
         attn_probs = F.softmax(attn_scores, dim=-1)
         attn_probs = self.drop1(attn_probs)
 
-        out = einsum(v, attn_probs, "b h s_v d, b h s_v s_k -> b h s_k d")
+        out = einsum(v, attn_probs, "b h s_k d, b h s_q s_k -> b h s_q d")
         out = rearrange(out, "b h s d -> b s (h d)")
         out = self.out_proj(out)
         out = self.drop2(out)
@@ -81,7 +170,9 @@ class CA(nn.Module):
         self.out_proj = nn.Linear(self.d_model, self.d_model, False)
 
     def forward(
-        self, x: Float[Tensor, "b s d"], s2: Float[Tensor, "b t d"]
+        self,
+        x: Float[Tensor, "b s d"],
+        s2: Float[Tensor, "b t d"],
     ) -> Float[Tensor, "b s d"]:
         q = self.q_proj(x)
         k = self.k_proj(s2)
@@ -141,7 +232,6 @@ class TransformerBlock(nn.Module):
         encoder_out: None | Float[Tensor, "b t d"] = None,
     ) -> Float[Tensor, "b s d"]:
         out = x + self.self_attention(self.ln_sa(x))
-        out = x + out
 
         if self.cross_attn:
             if encoder_out is None:
@@ -154,17 +244,36 @@ class TransformerBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, config: TransformerConfig, embedding: ThreeAxisSSP):
+    def __init__(
+        self,
+        config: TransformerConfig,
+        representation: SudokuRepresentation | None = None,
+        embedding: nn.Module | None = None,
+    ):
         super().__init__()
 
         self.config = config
-        if embedding.config.dim != config.d_model:
+        if representation is None and embedding is None:
+            raise ValueError("Pass a shared representation instance.")
+        if representation is not None and embedding is not None:
+            raise ValueError("Pass either representation or embedding, not both.")
+
+        token_source = representation if representation is not None else embedding
+        assert token_source is not None
+        if hasattr(token_source, "d_model") and token_source.d_model != config.d_model:
             raise ValueError(
-                f"Embedding dim ({embedding.config.dim}) must match model d_model ({config.d_model})."
+                f"Representation dim ({token_source.d_model}) must match model d_model ({config.d_model})."
+            )
+        if (
+            hasattr(token_source, "config")
+            and token_source.config.dim != config.d_model
+        ):
+            raise ValueError(
+                f"Embedding dim ({token_source.config.dim}) must match model d_model ({config.d_model})."
             )
 
-        self.embedding = embedding
-
+        self.representation = token_source
+        self.embedding = token_source
 
         self.blocks = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layers)]
@@ -173,8 +282,12 @@ class Encoder(nn.Module):
         self.out_ln = nn.LayerNorm(config.d_model)
         self.head = nn.Linear(config.d_model, config.d_model, False)
 
-    def forward(self, x: Float[Tensor, "b 81 3"]) -> Float[Tensor, "b 81 d"]:
-        tokens = self.embedding(x)
+    def forward(self, x: Float[Tensor, "b s 3"]) -> Float[Tensor, "b s d"]:
+        if hasattr(self.representation, "encode_clues"):
+            tokens = self.representation.encode_clues(x)
+        else:
+            tokens = self.representation(x)
+        tokens *= math.sqrt(self.config.d_model)
         out = self.drop(tokens)
 
         for block in self.blocks:
@@ -187,29 +300,54 @@ class Encoder(nn.Module):
 
 
 class Predictor(nn.Module):
-    def __init__(self, config: TransformerConfig, embedding: ThreeAxisSSP):
+    def __init__(
+        self,
+        config: TransformerConfig,
+        representation: SudokuRepresentation | None = None,
+        embedding: nn.Module | None = None,
+    ):
         super().__init__()
 
         self.config = config
-        if embedding.config.dim != config.d_model:
+        if representation is None and embedding is None:
+            raise ValueError("Pass a shared representation instance.")
+        if representation is not None and embedding is not None:
+            raise ValueError("Pass either representation or embedding, not both.")
+
+        token_source = representation if representation is not None else embedding
+        assert token_source is not None
+        if hasattr(token_source, "d_model") and token_source.d_model != config.d_model:
             raise ValueError(
-                f"Embedding dim ({embedding.config.dim}) must match model d_model ({config.d_model})."
+                f"Representation dim ({token_source.d_model}) must match model d_model ({config.d_model})."
+            )
+        if (
+            hasattr(token_source, "config")
+            and token_source.config.dim != config.d_model
+        ):
+            raise ValueError(
+                f"Embedding dim ({token_source.config.dim}) must match model d_model ({config.d_model})."
             )
 
-        self.embedding = embedding
+        self.representation = token_source
+        self.embedding = token_source
 
         self.blocks = nn.ModuleList(
             [TransformerBlock(config, True) for _ in range(config.n_layers)]
         )
         self.drop = nn.Dropout(config.dropout)
-        self.head = nn.Linear(config.d_model, config.d_model, False)
         self.out_ln = nn.LayerNorm(config.d_model)
         self.head = nn.Linear(config.d_model, config.d_model, False)
 
     def forward(
-        self, x: Float[Tensor, "b t 3"], encoder_out: Float[Tensor, "b 81 d"]
+        self,
+        x: Float[Tensor, "b t 3"],
+        encoder_out: Float[Tensor, "b s d"],
     ) -> Float[Tensor, "b t d"]:
-        tokens = self.embedding(x)
+        if hasattr(self.representation, "encode_queries"):
+            tokens = self.representation.encode_queries(x)
+        else:
+            tokens = self.representation(x)
+        tokens *= math.sqrt(self.config.d_model)
         out = self.drop(tokens)
 
         for block in self.blocks:

@@ -40,6 +40,25 @@ class ThreeAxisSSPConfig:
 
 
 @dataclass
+class TwoAxisSSPConfig:
+    """
+    Configuration for a bounded 2-axis SSP used for Sudoku coordinates.
+
+    Coordinate ranges:
+        x in [1, 9]
+        y in [1, 9]
+
+    dim:
+        Final SSP dimensionality. Must be even because we use [cos, sin] pairs.
+    """
+
+    dim: int = 256
+    seed: int = 42
+    freq_scale_min: float = 0.6
+    freq_scale_max: float = 3.0
+
+
+@dataclass
 class SSPHypervectorStore:
     """
     Serialized bundle of the SSP base hypervectors.
@@ -460,6 +479,86 @@ class ThreeAxisSSP(nn.Module):
         """
         noisy = ssp + noise_std * torch.randn_like(ssp)
         return F.normalize(noisy, dim=-1)
+
+
+class TwoAxisSSP(nn.Module):
+    """
+    Fixed SSP encoder for bounded 2D Sudoku coordinates [x, y].
+
+    This reuses the same cosine/sine SSP construction as the 3-axis encoder,
+    but only over board coordinates. The output vectors are unit normalized.
+    """
+
+    def __init__(self, config: TwoAxisSSPConfig):
+        super().__init__()
+        self.config = config
+        if config.dim % 2 != 0:
+            raise ValueError("dim must be even")
+
+        self.m = config.dim // 2
+        K = self._make_wavevectors(
+            m=self.m,
+            seed=config.seed,
+            scale_min=config.freq_scale_min,
+            scale_max=config.freq_scale_max,
+        )
+        self.register_buffer("K", K)
+
+    @property
+    def device(self) -> torch.device:
+        return self.K.device
+
+    @staticmethod
+    def _make_wavevectors(
+        m: int,
+        seed: int,
+        scale_min: float,
+        scale_max: float,
+    ) -> torch.Tensor:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+
+        directions = torch.randn(m, 2, generator=generator)
+        directions = F.normalize(directions, dim=-1)
+
+        magnitudes = torch.linspace(scale_min, scale_max, steps=m)
+        perm = torch.randperm(m, generator=generator)
+        magnitudes = magnitudes[perm]
+        return directions * magnitudes[:, None]
+
+    def _validate_coords(self, coords: torch.Tensor) -> None:
+        if coords.shape[-1] != 2:
+            raise ValueError(f"Expected coords shape (..., 2), got {tuple(coords.shape)}")
+
+        x = coords[..., 0]
+        y = coords[..., 1]
+        valid = (x >= 1) & (x <= 9) & (y >= 1) & (y <= 9)
+        if not torch.all(valid).item():
+            bad = coords[~valid]
+            raise ValueError(
+                "Found out-of-range coordinates. Expected x,y in [1,9]. "
+                f"Examples of invalid rows: {bad[:5]}"
+            )
+
+    @torch.no_grad()
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
+        return self.encode(coords)
+
+    @torch.no_grad()
+    def encode(self, coords: torch.Tensor) -> torch.Tensor:
+        coords = coords.to(dtype=self.K.dtype, device=self.device)
+        squeeze_batch = coords.ndim == 1
+        if squeeze_batch:
+            coords = coords[None, :]
+        self._validate_coords(coords)
+        flat_coords = rearrange(coords, "... c -> (...) c")
+        phase = torch.einsum("...c,mc->...m", flat_coords, self.K)
+        encoded = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+        encoded = F.normalize(encoded, dim=-1)
+        encoded = encoded.reshape(coords.shape[:-1] + (self.config.dim,))
+        if squeeze_batch:
+            return encoded[0]
+        return encoded
 
 
 if __name__ == "__main__":

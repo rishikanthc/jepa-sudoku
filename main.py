@@ -6,8 +6,7 @@ from datamodule import (
     SudokuDataConfig,
     SudokuDataModule,
 )
-from models import Encoder, Predictor, TransformerConfig
-from ssp import ThreeAxisSSP, ThreeAxisSSPConfig
+from models import Encoder, Predictor, SudokuRepresentation, TransformerConfig
 from trainermodule import SudokuTrainer, TrainConfig
 
 
@@ -31,6 +30,8 @@ def build_data_module(data_config: DictConfig, curriculum_config: DictConfig) ->
         num_cells_to_mask=data_config.num_cells_to_mask,
         seed=data_config.seed,
         unique_solution=data_config.unique_solution,
+        # Pass through the masking mode so debug/overfit runs can stay truly fixed.
+        randomize_mask_per_access=data_config.randomize_mask_per_access,
         mask_cells_curriculum=curriculum,
         batch_size=data_config.batch_size,
         num_workers=data_config.num_workers,
@@ -44,12 +45,10 @@ def build_data_module(data_config: DictConfig, curriculum_config: DictConfig) ->
     return SudokuDataModule(resolved_data_config)
 
 
-def build_components(config: DictConfig) -> tuple[str, ThreeAxisSSP, Encoder, Predictor]:
+def build_components(
+    config: DictConfig,
+) -> tuple[str, SudokuRepresentation, Encoder, Predictor]:
     device = config.training.device
-
-    embedding = ThreeAxisSSP(
-        ThreeAxisSSPConfig(dim=config.ssp.dim, seed=config.ssp.seed)
-    ).to(device)
 
     transformer_config = TransformerConfig(
         context_size=config.model.context_size,
@@ -59,10 +58,18 @@ def build_components(config: DictConfig) -> tuple[str, ThreeAxisSSP, Encoder, Pr
         d_ff=config.model.d_ff,
         dropout=config.model.dropout,
     )
+    if config.ssp.dim != transformer_config.d_model:
+        raise ValueError(
+            f"ssp.dim ({config.ssp.dim}) must match model d_model ({transformer_config.d_model})."
+        )
 
-    encoder = Encoder(transformer_config, embedding=embedding).to(device)
-    predictor = Predictor(transformer_config, embedding=embedding).to(device)
-    return device, embedding, encoder, predictor
+    representation = SudokuRepresentation(
+        d_model=transformer_config.d_model,
+        seed=config.ssp.seed,
+    ).to(device)
+    encoder = Encoder(transformer_config, representation=representation).to(device)
+    predictor = Predictor(transformer_config, representation=representation).to(device)
+    return device, representation, encoder, predictor
 
 
 @hydra_main(config_path="configs", config_name="default", version_base=None)
@@ -76,17 +83,18 @@ def main(config: DictConfig) -> None:
         else None
     )
 
-    device, embedding, encoder, predictor = build_components(config)
+    device, representation, encoder, predictor = build_components(config)
     trainer = SudokuTrainer(
         encoder=encoder,
         predictor=predictor,
         data_module=train_data,
         val_data_module=val_data,
-        embedding=embedding,
+        representation=representation,
         config=TrainConfig(
             max_epochs=config.training.max_epochs,
             patience=config.training.patience,
             learning_rate=config.training.learning_rate,
+            prototype_logit_scale=config.training.prototype_logit_scale,
             min_delta=config.training.min_delta,
             device=device,
             curriculum_enabled=config.curriculum.enabled,

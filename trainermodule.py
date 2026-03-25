@@ -8,9 +8,8 @@ from torch import Tensor
 from torch.optim import Adam
 
 from datamodule import SudokuDataModule
-from losses import cosine_loss
-from models import Encoder, Predictor
-from ssp import ThreeAxisSSP
+from losses import prototype_classification_loss
+from models import Encoder, Predictor, SudokuRepresentation
 
 
 @dataclass
@@ -18,6 +17,7 @@ class TrainConfig:
     max_epochs: int = 100
     patience: int = 10
     learning_rate: float = 1e-3
+    prototype_logit_scale: float = 1.0
     min_delta: float = 1e-6
     device: str = "cpu"
     curriculum_enabled: bool = False
@@ -39,41 +39,53 @@ class SudokuTrainer:
         encoder: Encoder,
         predictor: Predictor,
         data_module: SudokuDataModule,
-        embedding: ThreeAxisSSP,
+        representation: SudokuRepresentation,
         config: TrainConfig,
         val_data_module: SudokuDataModule | None = None,
     ) -> None:
-        if encoder.embedding is not predictor.embedding:
-            raise ValueError("Encoder and predictor must share the same embedding instance.")
-        if encoder.embedding is not embedding:
-            raise ValueError("Pass the same embedding instance used by encoder/predictor.")
+        if encoder.representation is not predictor.representation:
+            raise ValueError("Encoder and predictor must share the same representation instance.")
+        if encoder.representation is not representation:
+            raise ValueError("Pass the same representation instance used by encoder/predictor.")
 
         self.encoder = encoder
         self.predictor = predictor
-        self.embedding = embedding
+        self.representation = representation
         self.data_module = data_module
         self.val_data_module = val_data_module
         self.config = config
 
         self.encoder.to(config.device)
         self.predictor.to(config.device)
-        self.embedding.to(config.device)
+        self.representation.to(config.device)
 
         self.optimizer = Adam(
             chain(self.encoder.parameters(), self.predictor.parameters()),
             lr=config.learning_rate,
         )
+        if config.prototype_logit_scale <= 0.0:
+            raise ValueError(
+                f"prototype_logit_scale must be positive, got {config.prototype_logit_scale}."
+            )
         self._plateau_counter = 0
 
-    @staticmethod
-    def _build_value_only_coords(solution: Tensor) -> Tensor:
+    def _accuracy_from_logits(self, logits: Tensor, solution: Tensor) -> tuple[int, int]:
         """
-        Build z-only coords for target encoding:
-        set x,y = 0 and keep z from solution.
+        Compute exact-match accuracy of predicted digit values.
+
+        Returns:
+            num_correct, num_total
         """
-        coords = torch.zeros_like(solution)
-        coords[:, :, 2] = solution[:, :, 2]
-        return coords
+        if logits.numel() == 0:
+            return 0, 0
+
+        pred_digits = logits.argmax(dim=-1).to(dtype=torch.long) + 1
+        target_digits = solution[:, :, 2].to(dtype=torch.long)
+
+        matches = pred_digits == target_digits
+        num_correct = int(matches.sum().item())
+        num_total = int(target_digits.numel())
+        return num_correct, num_total
 
     def _maybe_increase_difficulty(self, monitor_loss: float, best_loss: float) -> bool:
         if self.config.curriculum_mode != "adaptive":
@@ -107,7 +119,7 @@ class SudokuTrainer:
         self._plateau_counter = 0
         return True
 
-    def _run_epoch(self, *, train: bool) -> float:
+    def _run_epoch(self, *, train: bool) -> tuple[float, float]:
         if train:
             self.encoder.train()
             self.predictor.train()
@@ -124,11 +136,13 @@ class SudokuTrainer:
             raise RuntimeError("Validation dataloader is not configured.")
 
         total_loss = 0.0
+        total_correct = 0
+        total_targets = 0
         num_batches = 0
 
         for batch in dataloader:
             num_batches += 1
-            puzzle, solution, query, _mask = batch
+            puzzle, solution, query = batch
             puzzle = puzzle.to(self.config.device)
             solution = solution.to(self.config.device)
             query = query.to(self.config.device)
@@ -136,10 +150,11 @@ class SudokuTrainer:
             with torch.set_grad_enabled(train):
                 encoder_out = self.encoder(puzzle)
                 pred_vectors = self.predictor(query, encoder_out)
-
-                target_coords = self._build_value_only_coords(solution)
-                target_vectors = self.embedding.encode(target_coords)
-                loss = cosine_loss(pred_vectors, target_vectors)
+                logits = self.representation.logits_from_predictions(
+                    pred_vectors,
+                    logit_scale=self.config.prototype_logit_scale,
+                )
+                loss = prototype_classification_loss(logits, solution[:, :, 2])
 
                 if train:
                     self.optimizer.zero_grad()
@@ -147,10 +162,16 @@ class SudokuTrainer:
                     self.optimizer.step()
 
                 total_loss += loss.item()
+            with torch.no_grad():
+                correct, num_targets = self._accuracy_from_logits(logits, solution)
+                total_correct += correct
+                total_targets += num_targets
 
         if num_batches == 0:
-            return 0.0
-        return total_loss / num_batches
+            return 0.0, 0.0
+
+        avg_accuracy = total_correct / total_targets if total_targets > 0 else 0.0
+        return total_loss / num_batches, avg_accuracy
 
     def train(self) -> list[tuple[float, float | None]]:
         """
@@ -162,25 +183,27 @@ class SudokuTrainer:
 
         for epoch in range(self.config.max_epochs):
             self.data_module.set_epoch(epoch)
-            train_loss = self._run_epoch(train=True)
+            train_loss, train_acc = self._run_epoch(train=True)
 
             val_loss = None
+            val_acc = None
             if self.val_data_module is not None:
                 self.val_data_module.set_epoch(epoch)
-                val_loss = self._run_epoch(train=False)
+                val_loss, val_acc = self._run_epoch(train=False)
 
             current_empty_cells = self.data_module.current_num_cells_to_mask
             if val_loss is not None:
                 print(
                     f"Epoch {epoch+1:03d}/{self.config.max_epochs:03d} | "
                     f"empty_cells={current_empty_cells:02d} | "
-                    f"train_loss={train_loss:.6f} | val_loss={val_loss:.6f}"
+                    f"train_loss={train_loss:.6f} | val_loss={val_loss:.6f} | "
+                    f"train_acc={train_acc:.6f} | val_acc={val_acc:.6f}"
                 )
             else:
                 print(
                     f"Epoch {epoch+1:03d}/{self.config.max_epochs:03d} | "
                     f"empty_cells={current_empty_cells:02d} | "
-                    f"train_loss={train_loss:.6f}"
+                    f"train_loss={train_loss:.6f} | train_acc={train_acc:.6f}"
                 )
 
             monitor_loss = val_loss if val_loss is not None else train_loss

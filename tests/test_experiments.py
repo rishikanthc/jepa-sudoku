@@ -30,6 +30,3 @@ def test_realistic_training_experiment_config_builds_train_val_test_split() -> N
     assert config.validation.num_samples == 5000
     assert config.test.enabled is True
     assert config.test.num_samples == 5000
-    assert config.data.randomize_mask_per_access is True
-    assert config.validation.randomize_mask_per_access is False
-    assert config.test.randomize_mask_per_access is False

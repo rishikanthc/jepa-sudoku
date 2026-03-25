@@ -212,6 +212,7 @@ class SudokuTrainer:
 
             monitor_loss = val_loss if val_loss is not None else train_loss
             history.append((train_loss, val_loss))
+            previous_best_loss = best_loss
 
             if monitor_loss + self.config.min_delta < best_loss:
                 best_loss = monitor_loss
@@ -219,10 +220,11 @@ class SudokuTrainer:
             else:
                 epochs_without_improvement += 1
 
-            if self._maybe_increase_difficulty(monitor_loss, best_loss):
+            if self._maybe_increase_difficulty(monitor_loss, previous_best_loss):
                 print(
                     f"Curriculum update -> empty_cells={self.data_module.current_num_cells_to_mask}"
                 )
+                best_loss = float("inf")
                 epochs_without_improvement = 0
 
             if epochs_without_improvement >= self.config.patience:

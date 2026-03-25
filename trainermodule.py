@@ -29,6 +29,12 @@ class TrainConfig:
     curriculum_num_epochs: int = 20
 
 
+@dataclass(frozen=True)
+class EvalMetrics:
+    loss: float
+    accuracy: float
+
+
 class SudokuTrainer:
     """
     Orchestrates an encoder/predictor training loop for Sudoku cell prediction.
@@ -42,6 +48,7 @@ class SudokuTrainer:
         representation: SudokuRepresentation,
         config: TrainConfig,
         val_data_module: SudokuDataModule | None = None,
+        test_data_module: SudokuDataModule | None = None,
     ) -> None:
         if encoder.representation is not predictor.representation:
             raise ValueError("Encoder and predictor must share the same representation instance.")
@@ -53,6 +60,7 @@ class SudokuTrainer:
         self.representation = representation
         self.data_module = data_module
         self.val_data_module = val_data_module
+        self.test_data_module = test_data_module
         self.config = config
 
         self.encoder.to(config.device)
@@ -119,7 +127,9 @@ class SudokuTrainer:
         self._plateau_counter = 0
         return True
 
-    def _run_epoch(self, *, train: bool) -> tuple[float, float]:
+    def _run_epoch(
+        self, data_module: SudokuDataModule, *, train: bool
+    ) -> tuple[float, float]:
         if train:
             self.encoder.train()
             self.predictor.train()
@@ -127,13 +137,7 @@ class SudokuTrainer:
             self.encoder.eval()
             self.predictor.eval()
 
-        dataloader = (
-            self.data_module.train_dataloader()
-            if train
-            else self.val_data_module.train_dataloader()
-        )
-        if dataloader is None:
-            raise RuntimeError("Validation dataloader is not configured.")
+        dataloader = data_module.train_dataloader()
 
         total_loss = 0.0
         total_correct = 0
@@ -183,13 +187,13 @@ class SudokuTrainer:
 
         for epoch in range(self.config.max_epochs):
             self.data_module.set_epoch(epoch)
-            train_loss, train_acc = self._run_epoch(train=True)
+            train_loss, train_acc = self._run_epoch(self.data_module, train=True)
 
             val_loss = None
             val_acc = None
             if self.val_data_module is not None:
                 self.val_data_module.set_epoch(epoch)
-                val_loss, val_acc = self._run_epoch(train=False)
+                val_loss, val_acc = self._run_epoch(self.val_data_module, train=False)
 
             current_empty_cells = self.data_module.current_num_cells_to_mask
             if val_loss is not None:
@@ -225,3 +229,17 @@ class SudokuTrainer:
                 break
 
         return history
+
+    def evaluate(self, split: str) -> EvalMetrics:
+        if split == "validation":
+            data_module = self.val_data_module
+        elif split == "test":
+            data_module = self.test_data_module
+        else:
+            raise ValueError(f"Unsupported split '{split}'. Use 'validation' or 'test'.")
+
+        if data_module is None:
+            raise RuntimeError(f"{split} dataloader is not configured.")
+
+        loss, accuracy = self._run_epoch(data_module, train=False)
+        return EvalMetrics(loss=loss, accuracy=accuracy)

@@ -1,5 +1,6 @@
 defaults:
   - _self_
+  - optional experiment: null
 
 # Global seed used across the run to make data generation and initialization deterministic.
 seed: 123
@@ -49,6 +50,22 @@ validation:
   num_cells_to_mask: 18
   seed: 43
   unique_solution: false
+  randomize_mask_per_access: false
+  batch_size: 1
+  num_workers: 0
+  shuffle: false
+  pin_memory: false
+  drop_last: false
+
+# Test split settings.
+# These fields mirror validation options and are evaluated after training.
+test:
+  enabled: false
+  num_samples: 1
+  num_cells_to_mask: 18
+  seed: 44
+  unique_solution: false
+  randomize_mask_per_access: false
   batch_size: 1
   num_workers: 0
   shuffle: false

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
@@ -10,7 +11,7 @@ from datamodule import (
     SudokuDataModule,
 )
 from models import Encoder, Predictor, SudokuRepresentation, TransformerConfig
-from trainermodule import SudokuTrainer, TrainConfig
+from trainermodule import EvalMetrics, SudokuTrainer, TrainConfig
 
 ONE_BATCH_OVERFIT_OVERRIDES: dict[str, Any] = {
     "data": {
@@ -55,6 +56,13 @@ ONE_BATCH_OVERFIT_OVERRIDES: dict[str, Any] = {
         "device": "cpu",
     },
 }
+
+
+@dataclass(frozen=True)
+class ExperimentResult:
+    history: list[tuple[float, float | None]]
+    validation_metrics: EvalMetrics | None = None
+    test_metrics: EvalMetrics | None = None
 
 
 def build_data_module(data_config: DictConfig, curriculum_config: DictConfig) -> SudokuDataModule:
@@ -143,6 +151,11 @@ def create_trainer(config: DictConfig) -> SudokuTrainer:
         if config.validation.enabled
         else None
     )
+    test_data = (
+        build_data_module(config.test, config.curriculum)
+        if config.test.enabled
+        else None
+    )
 
     device, representation, encoder, predictor = build_components(config)
     return SudokuTrainer(
@@ -150,14 +163,24 @@ def create_trainer(config: DictConfig) -> SudokuTrainer:
         predictor=predictor,
         data_module=train_data,
         val_data_module=val_data,
+        test_data_module=test_data,
         representation=representation,
         config=build_train_config(config, device),
     )
 
 
-def run_training_experiment(config: DictConfig) -> list[tuple[float, float | None]]:
+def run_training_experiment(config: DictConfig) -> ExperimentResult:
     trainer = create_trainer(config)
-    return trainer.train()
+    history = trainer.train()
+    validation_metrics = (
+        trainer.evaluate("validation") if config.validation.enabled else None
+    )
+    test_metrics = trainer.evaluate("test") if config.test.enabled else None
+    return ExperimentResult(
+        history=history,
+        validation_metrics=validation_metrics,
+        test_metrics=test_metrics,
+    )
 
 
 def build_one_batch_overfit_config(base_config: DictConfig) -> DictConfig:
@@ -166,9 +189,9 @@ def build_one_batch_overfit_config(base_config: DictConfig) -> DictConfig:
 
 def run_one_batch_overfit(base_config: DictConfig) -> tuple[
     DictConfig,
-    list[tuple[float, float | None]],
+    ExperimentResult,
 ]:
     config = build_one_batch_overfit_config(base_config)
     OmegaConf.resolve(config)
-    history = run_training_experiment(config)
-    return config, history
+    result = run_training_experiment(config)
+    return config, result

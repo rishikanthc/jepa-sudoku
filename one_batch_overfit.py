@@ -5,7 +5,8 @@ from experiments import run_one_batch_overfit
 
 def main() -> None:
     base_config = OmegaConf.load("configs/default.yaml")
-    config, history = run_one_batch_overfit(base_config)
+    config, result = run_one_batch_overfit(base_config)
+    history = result.history
 
     final_train_loss, final_val_loss = history[-1]
     print("One-batch overfit run completed.")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch.nn.functional import cosine_similarity
 
-from losses import cosine_loss
+from jepa_sudoku.model.losses import cosine_contrastive_loss, cosine_loss
 
 
 def test_cosine_loss_matches_expected_values() -> None:
@@ -49,3 +49,50 @@ def test_cosine_loss_matches_torch_formula() -> None:
 
     actual = cosine_loss(a, b, eps=eps)
     assert torch.allclose(actual, expected_loss, atol=1e-6)
+
+
+def test_cosine_contrastive_loss_matches_cosine_loss_when_wrong_digits_are_far() -> None:
+    pred = torch.tensor([[[1.0, 0.0, 0.0]]])
+    target = torch.tensor([[[1.0, 0.0, 0.0]]])
+    target_digits = torch.tensor([[1.0]])
+    prototypes = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    loss = cosine_contrastive_loss(
+        pred,
+        target,
+        target_digits,
+        prototypes,
+        non_target_weight=1.0,
+        margin=0.2,
+    )
+    assert torch.isclose(loss, torch.tensor(0.0), atol=1e-6)
+
+
+def test_cosine_contrastive_loss_penalizes_similarity_to_non_targets() -> None:
+    pred = torch.tensor([[[1.0, 1.0, 0.0]]])
+    target = torch.tensor([[[1.0, 0.0, 0.0]]])
+    target_digits = torch.tensor([[1.0]])
+    prototypes = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    plain = cosine_loss(pred, target)
+    contrastive = cosine_contrastive_loss(
+        pred,
+        target,
+        target_digits,
+        prototypes,
+        non_target_weight=1.0,
+        margin=0.2,
+    )
+    assert contrastive > plain

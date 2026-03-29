@@ -1,39 +1,23 @@
-defaults:
-  - _self_
-  - optional experiment: null
-
-seed: 123
-
-ssp:
-  dim: 512
-  seed: 42
-
-model:
-  context_size: 81
-  n_heads: 2
-  head_dim: 256
-  n_layers: 2
-  d_ff: 1024
-  dropout: 0.1
+# @package _global_
 
 data:
-  num_samples: 4500000
-  num_cells_to_mask: 20
+  num_samples: 6000000
+  num_cells_to_mask: 8
   dataset_path: datasets/pretrain_default.pt
   seed: 123
   unique_solution: false
   randomize_mask_per_access: true
-  batch_size: 128
+  batch_size: 256
   num_workers: 8
   shuffle: true
   pin_memory: true
   drop_last: true
 
 curriculum:
-  enabled: false
-  mode: adaptive
-  max_mask: 81
-  num_steps: 20
+  enabled: true
+  mode: linear
+  max_mask: 16
+  num_steps: 8000
   step: 1
   patience: 3
   min_delta: 1.0e-6
@@ -44,20 +28,11 @@ training:
   non_target_weight: 1.0
   non_target_margin: 0.2
 
-checkpoint:
-  dirpath: ${hydra:runtime.cwd}/checkpoints
-  filename: pretrain
-  monitor: train_loss
-  mode: min
-
-logging:
-  csv_path: ${hydra:runtime.cwd}/logs/pretrain_metrics.csv
-
 trainer:
-  accelerator: "cpu"
-  devices: 1
-  strategy: "auto"
-  precision: "32-true"
+  accelerator: "gpu"
+  devices: 2
+  strategy: "ddp"
+  precision: "16-mixed"
   matmul_precision: "high"
   deterministic: true
   benchmark: false

@@ -8,7 +8,7 @@ from einops import einsum, rearrange
 from jaxtyping import Float
 from torch import Tensor
 
-from ssp import TwoAxisSSP, TwoAxisSSPConfig
+from .ssp import TwoAxisSSP, TwoAxisSSPConfig
 
 
 @dataclass
@@ -98,6 +98,11 @@ class SudokuRepresentation(nn.Module):
         self, query_xyz: Float[Tensor, "b t 3"]
     ) -> Float[Tensor, "b t d"]:
         return self.encode_coordinates(query_xyz)
+
+    def encode_targets(
+        self, solution_xyz: Float[Tensor, "b t 3"]
+    ) -> Float[Tensor, "b t d"]:
+        return self._lookup_digit_vectors(solution_xyz[..., 2])
 
     def logits_from_predictions(
         self,

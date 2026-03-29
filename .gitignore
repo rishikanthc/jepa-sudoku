@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated artifacts
+checkpoints/
+datasets/
+logs/
+outputs/
+
+# Local notes
+writeup.md
+Screenshot*.png

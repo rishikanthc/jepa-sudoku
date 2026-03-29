@@ -1,26 +1,26 @@
 from omegaconf import OmegaConf
 
-from experiments import run_one_batch_overfit
+from jepa_sudoku.training.experiments import run_one_batch_overfit
 
 
 def main() -> None:
     base_config = OmegaConf.load("configs/default.yaml")
     config, result = run_one_batch_overfit(base_config)
-    history = result.history
-
-    final_train_loss, final_val_loss = history[-1]
+    if not result.is_global_zero:
+        return
     print("One-batch overfit run completed.")
     print(
         "Resolved setup: "
         f"num_samples={config.data.num_samples}, "
         f"batch_size={config.data.batch_size}, "
         f"randomize_mask_per_access={config.data.randomize_mask_per_access}, "
-        f"validation_enabled={config.validation.enabled}"
+        f"curriculum_enabled={config.curriculum.enabled}"
     )
-    print(f"Final train loss: {final_train_loss:.6f}")
-    if final_val_loss is not None:
-        print(f"Final val loss: {final_val_loss:.6f}")
-    print(f"Epochs run: {len(history)}")
+    if result.history:
+        print(f"Final train loss: {result.history[-1]:.6f}")
+    if result.checkpoint_path:
+        print(f"Checkpoint: {result.checkpoint_path}")
+    print(f"Epochs run: {len(result.history)}")
 
 
 if __name__ == "__main__":

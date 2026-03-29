@@ -1,0 +1,5 @@
+output_path: datasets/pretrain_default.pt
+num_samples: 9000000
+seed: 123
+workers: 16
+overwrite: true

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
-from sudoku_generator import SudokuBoardGenerator
+from .sudoku_generator import SudokuBoardGenerator
 
 MaskSchedule = Callable[[int], int]
 
@@ -17,34 +18,34 @@ class LinearMaskCurriculum:
     """
     Linear schedule for masking difficulty.
 
-    start: number of cells to mask at epoch 0.
-    max_mask: maximum number of masked cells after `num_epochs`.
-    num_epochs: total epochs over which to linearly increase from start to max.
+    start: number of cells to mask at step 0.
+    max_mask: maximum number of masked cells after `num_steps`.
+    num_steps: total training steps over which to linearly increase from start to max.
     """
 
     start: int
     max_mask: int
-    num_epochs: int = 1
+    num_steps: int = 1
 
     def __post_init__(self) -> None:
-        if self.num_epochs < 0:
-            raise ValueError("num_epochs must be >= 0")
-        if not 0 <= self.start <= 64:
-            raise ValueError("start must be between 0 and 64")
-        if not 0 <= self.max_mask <= 64:
-            raise ValueError("max_mask must be between 0 and 64")
+        if self.num_steps < 0:
+            raise ValueError("num_steps must be >= 0")
+        if not 0 <= self.start <= 81:
+            raise ValueError("start must be between 0 and 81")
+        if not 0 <= self.max_mask <= 81:
+            raise ValueError("max_mask must be between 0 and 81")
         if self.max_mask < self.start:
             raise ValueError("max_mask must be >= start")
 
-    def __call__(self, epoch: int) -> int:
-        if self.num_epochs == 0:
+    def __call__(self, step: int) -> int:
+        if self.num_steps == 0:
             return self.max_mask
 
-        clamped_epoch = max(0, epoch)
-        if clamped_epoch >= self.num_epochs:
+        clamped_step = max(0, step)
+        if clamped_step >= self.num_steps:
             return self.max_mask
 
-        ratio = clamped_epoch / self.num_epochs
+        ratio = clamped_step / self.num_steps
         return int(round(self.start + (self.max_mask - self.start) * ratio))
 
 
@@ -52,6 +53,7 @@ class LinearMaskCurriculum:
 class SudokuDataConfig:
     num_samples: int
     num_cells_to_mask: int
+    dataset_path: str | None = None
     seed: int = 0
     unique_solution: bool = False
     randomize_mask_per_access: bool = True
@@ -66,6 +68,21 @@ class SudokuDataConfig:
 def _board_to_value_tensor(board: list[list[int]]) -> torch.Tensor:
     values = [cell for row in board for cell in row]
     return torch.tensor(values, dtype=torch.float32)
+
+
+def load_precomputed_solutions(dataset_path: str) -> Tensor:
+    path = Path(dataset_path)
+    payload = torch.load(path, map_location="cpu")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected dataset payload dict in {path}, got {type(payload)!r}")
+    solutions = payload.get("solution_boards")
+    if not isinstance(solutions, torch.Tensor):
+        raise ValueError(f"Dataset {path} is missing a tensor field named 'solution_boards'.")
+    if solutions.ndim != 2 or solutions.shape[1] != 81:
+        raise ValueError(
+            f"Expected solution_boards with shape (N, 81), got {tuple(solutions.shape)}."
+        )
+    return solutions.contiguous().to(device="cpu")
 
 
 class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -86,6 +103,7 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         self,
         num_samples: int,
         num_cells_to_mask: int,
+        solution_boards: Tensor | None = None,
         seed: int = 0,
         unique_solution: bool = False,
         randomize_mask_per_access: bool = True,
@@ -93,10 +111,11 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
     ) -> None:
         if num_samples < 0:
             raise ValueError("num_samples must be >= 0")
-        if not 0 <= num_cells_to_mask <= 64:
-            raise ValueError("num_cells_to_mask must be between 0 and 64 inclusive")
+        if not 0 <= num_cells_to_mask <= 81:
+            raise ValueError("num_cells_to_mask must be between 0 and 81 inclusive")
 
-        self.num_samples = num_samples
+        self._solution_boards = solution_boards.contiguous().to(device="cpu") if solution_boards is not None else None
+        self.num_samples = int(solution_boards.shape[0]) if solution_boards is not None else num_samples
         self.num_cells_to_mask = num_cells_to_mask
         self.seed = int(seed)
         self.unique_solution = unique_solution
@@ -116,6 +135,9 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         grid_x, grid_y = torch.meshgrid(xs, ys, indexing="ij")
         self._xy = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1).float()
 
+    def _sample_seed(self, index: int, *, epoch: int = 0) -> int:
+        return (self.seed * 1_000_003) + index + (epoch * 10_000_019)
+
     def __len__(self) -> int:
         return self.num_samples
 
@@ -124,8 +146,8 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
 
     def set_num_cells_to_mask(self, num_cells_to_mask: int) -> None:
         num_cells = int(num_cells_to_mask)
-        if not 0 <= num_cells <= 64:
-            raise ValueError("num_cells_to_mask must be between 0 and 64 inclusive")
+        if not 0 <= num_cells <= 81:
+            raise ValueError("num_cells_to_mask must be between 0 and 81 inclusive")
         self._manual_num_cells_to_mask = num_cells
 
     def _num_cells_for_epoch(self) -> int:
@@ -137,13 +159,15 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         else:
             num_cells = int(self.mask_cells_curriculum(self.current_epoch))
 
-        return max(0, min(64, num_cells))
+        return max(0, min(81, num_cells))
 
     def _get_or_build_template(self, index: int) -> Tensor:
+        if self._solution_boards is not None:
+            return self._solution_boards[index].to(dtype=torch.float32)
         if index in self._solution_cache:
             return self._solution_cache[index]
 
-        sample_seed = self.seed + index
+        sample_seed = self._sample_seed(index)
         generator = SudokuBoardGenerator(seed=sample_seed)
         solution_board = generator.generate_full_board()
         solution_values = _board_to_value_tensor(solution_board)
@@ -177,9 +201,9 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
 
         num_cells_to_mask = self._num_cells_for_epoch()
         if self.unique_solution:
-            sample_seed = self.seed + index + self.current_epoch * 10_009
+            sample_seed = self._sample_seed(index, epoch=self.current_epoch)
             puzzle_data = SudokuBoardGenerator(seed=sample_seed).generate_puzzle(
-                removed_cells=num_cells_to_mask,
+                removed_cells=min(num_cells_to_mask, 80),
                 unique_solution=True,
             )
             solution_values = _board_to_value_tensor(puzzle_data.solution)
@@ -187,14 +211,14 @@ class SudokuPuzzleDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
             if int((puzzle_values == 0).sum()) != num_cells_to_mask:
                 solution_values = self._get_or_build_template(index)
                 puzzle_values = solution_values.clone()
-                n = min(num_cells_to_mask, 64)
+                n = min(num_cells_to_mask, 81)
                 if n > 0:
                     masked_indices = self._masked_indices(index, n)
                     puzzle_values[masked_indices] = 0.0
         else:
             solution_values = self._get_or_build_template(index)
             puzzle_values = solution_values.clone()
-            n = min(num_cells_to_mask, 64)
+            n = min(num_cells_to_mask, 81)
             if n > 0:
                 masked_indices = self._masked_indices(index, n)
                 puzzle_values[masked_indices] = 0.0
@@ -227,6 +251,11 @@ class SudokuDataModule:
         self.dataset = SudokuPuzzleDataset(
             num_samples=config.num_samples,
             num_cells_to_mask=config.num_cells_to_mask,
+            solution_boards=(
+                load_precomputed_solutions(config.dataset_path)
+                if config.dataset_path is not None
+                else None
+            ),
             seed=config.seed,
             unique_solution=config.unique_solution,
             randomize_mask_per_access=config.randomize_mask_per_access,

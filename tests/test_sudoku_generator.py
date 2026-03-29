@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sudoku_generator import SudokuBoardGenerator
+from jepa_sudoku.data.sudoku_generator import SudokuBoardGenerator
 
 
 def test_reproducible_full_board_across_instances() -> None:
@@ -34,4 +34,3 @@ def test_reset_replays_reproducible_sequence() -> None:
     second_series = [generator.generate_full_board() for _ in range(3)]
 
     assert first_series == second_series
-

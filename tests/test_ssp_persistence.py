@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ssp import SSPHypervectorStore, ThreeAxisSSP, ThreeAxisSSPConfig
+from jepa_sudoku.model.ssp import SSPHypervectorStore, ThreeAxisSSP, ThreeAxisSSPConfig
 
 
 def _coords() -> torch.Tensor:
